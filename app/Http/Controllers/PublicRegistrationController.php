@@ -1,0 +1,117 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Attendee;
+use App\Models\Event;
+use App\Models\Registration;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
+
+class PublicRegistrationController extends Controller
+{
+    public function show(Event $event): JsonResponse
+    {
+        abort_unless(in_array($event->status, ['published', 'live'], true), 404);
+
+        return response()->json([
+            'data' => $event->load(['activeRegistrationForm.fields.options']),
+        ]);
+    }
+
+    public function store(Request $request, Event $event): JsonResponse
+    {
+        abort_unless(in_array($event->status, ['published', 'live'], true), 404);
+
+        $form = $event->activeRegistrationForm()->with('fields.options')->firstOrFail();
+        $rules = ['answers' => ['required', 'array']];
+
+        foreach ($form->fields as $field) {
+            $key = 'answers.'.$field->key;
+            $fieldRules = $field->is_required ? ['required'] : ['nullable'];
+
+            if (in_array($field->type, ['short', 'paragraph'], true)) {
+                $fieldRules[] = 'string';
+                $fieldRules[] = $field->type === 'short' ? 'max:1000' : 'max:5000';
+            } elseif ($field->type === 'date') {
+                $fieldRules[] = 'date_format:Y-m-d';
+            } elseif (in_array($field->type, ['multiple', 'dropdown'], true)) {
+                $fieldRules[] = Rule::in($field->options->pluck('value')->all());
+            } elseif ($field->type === 'checkboxes') {
+                $fieldRules[] = 'array';
+                $rules[$key.'.*'] = [Rule::in($field->options->pluck('value')->all())];
+            }
+
+            $rules[$key] = $fieldRules;
+        }
+
+        $answers = Validator::make($request->all(), $rules)->validate()['answers'];
+        $fullNameField = $form->fields->firstWhere('system_key', 'full_name');
+        $emailField = $form->fields->firstWhere('system_key', 'email');
+        $email = Str::lower(trim((string) ($answers[$emailField->key] ?? '')));
+        $fullName = trim((string) ($answers[$fullNameField->key] ?? ''));
+
+        if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw ValidationException::withMessages([$emailField->key => 'A valid email address is required.']);
+        }
+
+        $registration = DB::transaction(function () use ($event, $form, $answers, $email, $fullName): Registration {
+            $lockedEvent = Event::query()->lockForUpdate()->findOrFail($event->id);
+            $registrationCount = $lockedEvent->registrations()
+                ->whereNotIn('status', ['cancelled', 'rejected'])
+                ->count();
+
+            if ($lockedEvent->capacity && $registrationCount >= $lockedEvent->capacity) {
+                throw ValidationException::withMessages(['event' => 'This event has reached its capacity.']);
+            }
+
+            $attendee = Attendee::updateOrCreate(
+                ['email_normalized' => $email],
+                ['email' => $email, 'full_name' => $fullName],
+            );
+
+            if ($lockedEvent->registrations()->where('attendee_id', $attendee->id)->exists()) {
+                throw ValidationException::withMessages(['email' => 'This email is already registered for the event.']);
+            }
+
+            $registration = $lockedEvent->registrations()->create([
+                'registration_form_id' => $form->id,
+                'attendee_id' => $attendee->id,
+                'registration_code' => $this->uniqueRegistrationCode(),
+                'status' => 'confirmed',
+                'source' => 'public_form',
+                'qr_token_hash' => hash('sha256', Str::random(64)),
+                'registered_at' => now(),
+                'confirmed_at' => now(),
+            ]);
+
+            foreach ($form->fields as $field) {
+                $registration->answers()->create([
+                    'form_field_id' => $field->id,
+                    'answer' => $answers[$field->key] ?? null,
+                ]);
+            }
+
+            return $registration;
+        });
+
+        return response()->json([
+            'data' => $registration->load(['attendee', 'answers.field']),
+            'message' => 'Registration completed successfully.',
+        ], 201);
+    }
+
+    private function uniqueRegistrationCode(): string
+    {
+        do {
+            $code = 'REG-'.Str::upper(Str::random(10));
+        } while (Registration::where('registration_code', $code)->exists());
+
+        return $code;
+    }
+}

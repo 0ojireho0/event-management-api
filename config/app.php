@@ -54,6 +54,14 @@ return [
 
     'url' => env('APP_URL', 'http://localhost'),
 
+    'frontend_url' => env('FRONTEND_URL', 'http://localhost:3000'),
+
+    'seed_admin' => [
+        'name' => env('ADMIN_NAME', 'System Administrator'),
+        'email' => env('ADMIN_EMAIL', 'admin@hypeeventhub.test'),
+        'password' => env('ADMIN_PASSWORD', 'ChangeMe123!'),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Application Timezone

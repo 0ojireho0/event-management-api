@@ -1,11 +1,18 @@
 <?php
 
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
+use App\Http\Controllers\EventController;
+use App\Http\Controllers\PublicRegistrationController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/login', [AuthenticatedSessionController::class, 'store'])
     ->middleware('guest');
+
+Route::prefix('registration/events')->group(function () {
+    Route::get('/{event:slug}', [PublicRegistrationController::class, 'show']);
+    Route::post('/{event:slug}', [PublicRegistrationController::class, 'store']);
+});
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', function (Request $request) {
@@ -13,4 +20,12 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::post('/logout', [AuthenticatedSessionController::class, 'destroy']);
+
+    Route::get('/events', [EventController::class, 'index']);
+    Route::post('/events', [EventController::class, 'store']);
+    Route::get('/events/{event:slug}', [EventController::class, 'show']);
+    Route::match(['put', 'patch'], '/events/{event:slug}', [EventController::class, 'update']);
+    Route::get('/events/{event:slug}/registrations', [EventController::class, 'registrations']);
+    Route::post('/events/{event:slug}/invitations', [EventController::class, 'sendInvitation']);
+    Route::post('/events/{event:slug}/check-ins', [EventController::class, 'checkIn']);
 });
