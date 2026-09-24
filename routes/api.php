@@ -3,6 +3,7 @@
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\EventController;
 use App\Http\Controllers\PublicRegistrationController;
+use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -22,6 +23,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthenticatedSessionController::class, 'destroy']);
 
     Route::middleware('role:Admin')->group(function () {
+        Route::apiResource('users', UserController::class)->except(['show']);
         Route::get('/events', [EventController::class, 'index']);
         Route::post('/events', [EventController::class, 'store']);
         Route::get('/events/{event:slug}', [EventController::class, 'show']);
