@@ -157,6 +157,19 @@ test('an admin cannot update an admin account through user management', function
         ->and($target->getAuthPassword())->toBe($originalPassword);
 });
 
+test('an invalid update targeting an admin still returns forbidden', function () {
+    $admin = User::factory()->create();
+    $target = User::factory()->create(['email' => 'protected-admin@example.com']);
+    $originalName = $target->name;
+
+    $this->actingAs($admin)->putJson('/api/users/'.$target->id, [])
+        ->assertForbidden();
+
+    $target->refresh();
+    expect($target->name)->toBe($originalName)
+        ->and($target->email)->toBe('protected-admin@example.com');
+});
+
 test('an admin cannot delete an admin account through user management', function () {
     $admin = User::factory()->create();
     $target = User::factory()->create();

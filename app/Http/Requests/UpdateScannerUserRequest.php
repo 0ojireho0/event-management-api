@@ -11,7 +11,9 @@ class UpdateScannerUserRequest extends FormRequest
 {
     public function authorize(): bool
     {
-        return true;
+        $user = $this->route('user');
+
+        return $user instanceof User && $user->isScanner();
     }
 
     protected function prepareForValidation(): void
