@@ -51,16 +51,18 @@ class PublicRegistrationController extends Controller
         }
 
         $answers = Validator::make($request->all(), $rules)->validate()['answers'];
-        $fullNameField = $form->fields->firstWhere('system_key', 'full_name');
+        $firstNameField = $form->fields->firstWhere('system_key', 'first_name');
+        $lastNameField = $form->fields->firstWhere('system_key', 'last_name');
         $emailField = $form->fields->firstWhere('system_key', 'email');
         $email = Str::lower(trim((string) ($answers[$emailField->key] ?? '')));
-        $fullName = trim((string) ($answers[$fullNameField->key] ?? ''));
+        $firstName = trim((string) ($answers[$firstNameField->key] ?? ''));
+        $lastName = trim((string) ($answers[$lastNameField->key] ?? ''));
 
         if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
             throw ValidationException::withMessages([$emailField->key => 'A valid email address is required.']);
         }
 
-        $registration = DB::transaction(function () use ($event, $form, $answers, $email, $fullName): Registration {
+        $registration = DB::transaction(function () use ($event, $form, $answers, $email, $firstName, $lastName): Registration {
             $lockedEvent = Event::query()->lockForUpdate()->findOrFail($event->id);
             $registrationCount = $lockedEvent->registrations()
                 ->whereNotIn('status', ['cancelled', 'rejected'])
@@ -72,7 +74,7 @@ class PublicRegistrationController extends Controller
 
             $attendee = Attendee::updateOrCreate(
                 ['email_normalized' => $email],
-                ['email' => $email, 'full_name' => $fullName],
+                ['email' => $email, 'first_name' => $firstName, 'last_name' => $lastName],
             );
 
             if ($lockedEvent->registrations()->where('attendee_id', $attendee->id)->exists()) {

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\StoreEventRequest;
+use App\Models\EmailInvitation;
 use App\Models\Event;
 use App\Models\Registration;
 use App\Models\RegistrationForm;
@@ -114,23 +115,88 @@ class EventController extends Controller
         return response()->json($registrations);
     }
 
+    public function registrationExport(Request $request, Event $event): JsonResponse
+    {
+        $this->ensureOwner($request, $event);
+
+        $registrations = $event->registrations()
+            ->with(['attendee', 'answers.field', 'checkIns'])
+            ->latest('registered_at')
+            ->get();
+
+        return response()->json(['data' => $registrations]);
+    }
+
     public function sendInvitation(Request $request, Event $event): JsonResponse
     {
         $this->ensureOwner($request, $event);
-        $validated = $request->validate(['email' => ['required', 'email:rfc', 'max:255']]);
-        $registrationUrl = rtrim((string) config('app.frontend_url'), '/').'/register/'.$event->slug;
 
-        Mail::raw(
-            "You are invited to register for {$event->title}.\n\nRegistration link: {$registrationUrl}",
-            fn ($message) => $message
-                ->to($validated['email'])
-                ->subject('Invitation: '.$event->title),
-        );
+        $emailInput = $request->input('emails', []);
+
+        if (is_array($emailInput)) {
+            $request->merge([
+                'emails' => collect($emailInput)
+                    ->map(fn ($email) => is_string($email) ? strtolower(trim($email)) : $email)
+                    ->unique()
+                    ->values()
+                    ->all(),
+            ]);
+        }
+
+        $validated = $request->validate([
+            'emails' => ['required', 'array', 'min:1', 'max:100'],
+            'emails.*' => ['required', 'string', 'email:rfc', 'max:255'],
+        ]);
+        $registrationUrl = rtrim((string) config('app.frontend_url'), '/').'/register/'.$event->slug;
+        $invitations = collect();
+
+        foreach ($validated['emails'] as $email) {
+            $invitation = $event->emailInvitations()->create([
+                'email' => $email,
+                'status' => 'failed',
+            ]);
+
+            try {
+                Mail::raw(
+                    "You are invited to register for {$event->title}.\n\nRegistration link: {$registrationUrl}",
+                    fn ($message) => $message
+                        ->to($email)
+                        ->subject('Invitation: '.$event->title),
+                );
+
+                $invitation->update(['status' => 'sent']);
+            } catch (\Throwable) {
+                // The audit log intentionally stores only the delivery status.
+            }
+
+            $invitations->push($invitation->refresh());
+        }
+
+        $sentCount = $invitations->where('status', 'sent')->count();
+        $failedCount = $invitations->where('status', 'failed')->count();
 
         return response()->json([
-            'message' => 'Invitation sent successfully.',
+            'data' => $invitations->map(fn (EmailInvitation $invitation) => $this->invitationData($event, $invitation))->values(),
+            'message' => $failedCount === 0
+                ? ($sentCount === 1 ? 'Invitation sent successfully.' : "{$sentCount} invitations sent successfully.")
+                : "{$sentCount} sent, {$failedCount} failed.",
+            'sent_count' => $sentCount,
+            'failed_count' => $failedCount,
             'registration_url' => $registrationUrl,
         ]);
+    }
+
+    public function invitations(Request $request, Event $event): JsonResponse
+    {
+        $this->ensureOwner($request, $event);
+
+        $invitations = $event->emailInvitations()
+            ->latest('id')
+            ->limit(20)
+            ->get()
+            ->map(fn (EmailInvitation $invitation) => $this->invitationData($event, $invitation));
+
+        return response()->json(['data' => $invitations]);
     }
 
     public function checkIn(Request $request, Event $event): JsonResponse
@@ -197,6 +263,20 @@ class EventController extends Controller
     private function ensureOwner(Request $request, Event $event): void
     {
         abort_unless($event->created_by === $request->user()->id, 404);
+    }
+
+    private function invitationData(Event $event, EmailInvitation $invitation): array
+    {
+        return [
+            'id' => $invitation->id,
+            'email' => $invitation->email,
+            'status' => $invitation->status,
+            'created_at' => $invitation->created_at,
+            'event' => [
+                'slug' => $event->slug,
+                'title' => $event->title,
+            ],
+        ];
     }
 
     private function uniqueHashedSlug(): string

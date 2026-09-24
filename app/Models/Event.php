@@ -62,6 +62,11 @@ class Event extends Model
         return $this->hasMany(Registration::class);
     }
 
+    public function emailInvitations(): HasMany
+    {
+        return $this->hasMany(EmailInvitation::class);
+    }
+
     public function checkIns(): HasManyThrough
     {
         return $this->hasManyThrough(CheckIn::class, Registration::class);

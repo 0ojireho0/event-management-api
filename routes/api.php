@@ -26,6 +26,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/events/{event:slug}', [EventController::class, 'show']);
     Route::match(['put', 'patch'], '/events/{event:slug}', [EventController::class, 'update']);
     Route::get('/events/{event:slug}/registrations', [EventController::class, 'registrations']);
+    Route::get('/events/{event:slug}/registrations/export', [EventController::class, 'registrationExport']);
+    Route::get('/events/{event:slug}/invitations', [EventController::class, 'invitations']);
     Route::post('/events/{event:slug}/invitations', [EventController::class, 'sendInvitation']);
     Route::post('/events/{event:slug}/check-ins', [EventController::class, 'checkIn']);
 });

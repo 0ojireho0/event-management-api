@@ -30,7 +30,7 @@ class StoreEventRequest extends FormRequest
             'status' => ['required', Rule::in(['draft', 'published', 'live'])],
             'registration_form' => ['required', 'array', 'min:2'],
             'registration_form.*.key' => ['required', 'string', 'max:100', 'distinct'],
-            'registration_form.*.system_key' => ['nullable', Rule::in(['full_name', 'email', 'phone', 'company'])],
+            'registration_form.*.system_key' => ['nullable', Rule::in(['first_name', 'last_name', 'email', 'phone', 'company'])],
             'registration_form.*.type' => ['required', Rule::in(['short', 'paragraph', 'multiple', 'checkboxes', 'dropdown', 'date'])],
             'registration_form.*.label' => ['required', 'string', 'max:255'],
             'registration_form.*.description' => ['nullable', 'string', 'max:2000'],
@@ -46,15 +46,19 @@ class StoreEventRequest extends FormRequest
             $fields = collect($this->input('registration_form', []));
             $systemKeys = $fields->pluck('system_key');
 
-            if (! $systemKeys->contains('full_name')) {
-                $validator->errors()->add('registration_form', 'The form must contain a Full name field.');
+            if (! $systemKeys->contains('first_name')) {
+                $validator->errors()->add('registration_form', 'The form must contain a First name field.');
+            }
+
+            if (! $systemKeys->contains('last_name')) {
+                $validator->errors()->add('registration_form', 'The form must contain a Last name field.');
             }
 
             if (! $systemKeys->contains('email')) {
                 $validator->errors()->add('registration_form', 'The form must contain an Email field.');
             }
 
-            foreach (['full_name' => 'Full name', 'email' => 'Email'] as $key => $label) {
+            foreach (['first_name' => 'First name', 'last_name' => 'Last name', 'email' => 'Email'] as $key => $label) {
                 $field = $fields->firstWhere('system_key', $key);
 
                 if ($field && ! ($field['required'] ?? false)) {

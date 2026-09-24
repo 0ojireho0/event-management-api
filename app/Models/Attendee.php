@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Attendee extends Model
 {
-    protected $fillable = ['full_name', 'email', 'email_normalized', 'phone', 'company'];
+    protected $fillable = ['first_name', 'last_name', 'email', 'email_normalized', 'phone', 'company'];
 
     public function registrations(): HasMany
     {
