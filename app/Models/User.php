@@ -14,6 +14,9 @@ class User extends Authenticatable
     /** @use HasFactory<UserFactory> */
     use HasFactory, Notifiable;
 
+    public const ROLE_ADMIN = 'Admin';
+    public const ROLE_SCANNER = 'Scanner';
+
     /**
      * The attributes that are mass assignable.
      *
@@ -53,5 +56,15 @@ class User extends Authenticatable
     public function events(): HasMany
     {
         return $this->hasMany(Event::class, 'created_by');
+    }
+
+    public function isAdmin(): bool
+    {
+        return $this->role === self::ROLE_ADMIN;
+    }
+
+    public function isScanner(): bool
+    {
+        return $this->role === self::ROLE_SCANNER;
     }
 }

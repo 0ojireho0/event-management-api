@@ -21,13 +21,15 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('/logout', [AuthenticatedSessionController::class, 'destroy']);
 
-    Route::get('/events', [EventController::class, 'index']);
-    Route::post('/events', [EventController::class, 'store']);
-    Route::get('/events/{event:slug}', [EventController::class, 'show']);
-    Route::match(['put', 'patch'], '/events/{event:slug}', [EventController::class, 'update']);
-    Route::get('/events/{event:slug}/registrations', [EventController::class, 'registrations']);
-    Route::get('/events/{event:slug}/registrations/export', [EventController::class, 'registrationExport']);
-    Route::get('/events/{event:slug}/invitations', [EventController::class, 'invitations']);
-    Route::post('/events/{event:slug}/invitations', [EventController::class, 'sendInvitation']);
-    Route::post('/events/{event:slug}/check-ins', [EventController::class, 'checkIn']);
+    Route::middleware('role:Admin')->group(function () {
+        Route::get('/events', [EventController::class, 'index']);
+        Route::post('/events', [EventController::class, 'store']);
+        Route::get('/events/{event:slug}', [EventController::class, 'show']);
+        Route::match(['put', 'patch'], '/events/{event:slug}', [EventController::class, 'update']);
+        Route::get('/events/{event:slug}/registrations', [EventController::class, 'registrations']);
+        Route::get('/events/{event:slug}/registrations/export', [EventController::class, 'registrationExport']);
+        Route::get('/events/{event:slug}/invitations', [EventController::class, 'invitations']);
+        Route::post('/events/{event:slug}/invitations', [EventController::class, 'sendInvitation']);
+        Route::post('/events/{event:slug}/check-ins', [EventController::class, 'checkIn']);
+    });
 });
