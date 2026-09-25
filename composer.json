@@ -6,7 +6,9 @@
     "keywords": ["laravel", "framework"],
     "license": "MIT",
     "require": {
+        "ext-gd": "*",
         "php": "^8.2",
+        "endroid/qr-code": "^5.1",
         "laravel/framework": "^12.0",
         "laravel/sanctum": "^4.0",
         "laravel/tinker": "^2.10.1"

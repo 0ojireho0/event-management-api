@@ -9,20 +9,61 @@ use App\Models\Registration;
 use App\Models\RegistrationForm;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 
 class EventController extends Controller
 {
-    public function index(Request $request): JsonResponse
-    {
+    public function index(Request $request): JsonResponse{
+        $now = now();
+
         $events = Event::query()
             ->where('created_by', $request->user()->id)
-            ->with(['activeRegistrationForm.fields.options'])
+            ->where('ends_at', '>=', $now)
+            ->with([
+                'activeRegistrationForm.fields.options',
+            ])
+            ->withCount([
+                'registrations',
+                'acceptedCheckIns',
+            ])
+            ->orderBy('starts_at', 'asc')
+            ->get()
+            ->map(function ($event) use ($now) {
+                $event->event_state =
+                    $event->starts_at <= $now && $event->ends_at >= $now
+                        ? 'ongoing'
+                        : 'upcoming';
+
+                return $event;
+            });
+
+        return response()->json([
+            'data' => $events,
+        ]);
+    }
+
+    public function scannerEvents(Request $request): JsonResponse
+    {
+        $now = now();
+        $events = Event::query()
+            ->where('status', 'published')
+            ->whereBetween('starts_at', [
+                $now->copy()->subHours(48),
+                $now->copy()->addHours(48),
+            ])
+            ->when(
+                $request->user()->isAdmin(),
+                fn ($query) => $query->where('created_by', $request->user()->id),
+            )
+            ->select(['id', 'slug', 'title', 'venue', 'starts_at', 'ends_at', 'timezone', 'status'])
             ->withCount(['registrations', 'acceptedCheckIns'])
-            ->latest('starts_at')
-            ->get();
+            ->orderBy('starts_at')
+            ->get()
+            ->filter(fn (Event $event): bool => $this->isScannerEventAvailable($event))
+            ->values();
 
         return response()->json(['data' => $events]);
     }
@@ -30,7 +71,7 @@ class EventController extends Controller
     public function store(StoreEventRequest $request): JsonResponse
     {
         $event = DB::transaction(function () use ($request): Event {
-            $data = $request->safe()->except('registration_form');
+            $data = $this->normalizedEventData($request);
             $data['created_by'] = $request->user()->id;
             $data['slug'] = $this->uniqueHashedSlug();
 
@@ -83,7 +124,7 @@ class EventController extends Controller
         $this->ensureOwner($request, $event);
 
         DB::transaction(function () use ($request, $event): void {
-            $event->update($request->safe()->except('registration_form'));
+            $event->update($this->normalizedEventData($request));
             $event->registrationForms()->update(['is_active' => false]);
 
             $form = $event->registrationForms()->create([
@@ -201,7 +242,11 @@ class EventController extends Controller
 
     public function checkIn(Request $request, Event $event): JsonResponse
     {
-        $this->ensureOwner($request, $event);
+        if ($request->user()->isAdmin()) {
+            $this->ensureOwner($request, $event);
+        } else {
+            abort_unless($this->isScannerEventAvailable($event), 404);
+        }
         $validated = $request->validate([
             'registration_code' => ['required', 'string'],
             'gate' => ['nullable', 'string', 'max:100'],
@@ -212,6 +257,7 @@ class EventController extends Controller
             $registration = Registration::query()
                 ->where('event_id', $event->id)
                 ->where('registration_code', $validated['registration_code'])
+                ->where('status', 'confirmed')
                 ->lockForUpdate()
                 ->firstOrFail();
 
@@ -263,6 +309,31 @@ class EventController extends Controller
     private function ensureOwner(Request $request, Event $event): void
     {
         abort_unless($event->created_by === $request->user()->id, 404);
+    }
+
+    private function isScannerEventAvailable(Event $event): bool
+    {
+        if ($event->status !== 'published') {
+            return false;
+        }
+
+        return $event->starts_at
+            ->copy()
+            ->setTimezone($event->timezone)
+            ->toDateString() === now($event->timezone)->toDateString();
+    }
+
+    private function normalizedEventData(StoreEventRequest $request): array
+    {
+        $data = $request->safe()->except('registration_form');
+
+        foreach (['starts_at', 'ends_at', 'registration_opens_at', 'registration_closes_at'] as $field) {
+            if (! empty($data[$field])) {
+                $data[$field] = Carbon::parse($data[$field])->utc()->format('Y-m-d H:i:s');
+            }
+        }
+
+        return $data;
     }
 
     private function invitationData(Event $event, EmailInvitation $invitation): array

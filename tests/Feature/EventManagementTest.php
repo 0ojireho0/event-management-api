@@ -1,10 +1,13 @@
 <?php
 
+use App\Mail\RegistrationConfirmation;
 use App\Models\Attendee;
 use App\Models\EmailInvitation;
 use App\Models\Event;
 use App\Models\Registration;
 use App\Models\User;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Mail;
 
 function eventPayload(): array
@@ -110,6 +113,72 @@ test('a guest can register and the owner can retrieve the attendee', function ()
         ->assertJsonPath('data.0.attendee.last_name', 'Rivera');
 });
 
+test('a registered attendee receives an email containing their qr pass', function () {
+    Mail::fake();
+    $user = User::factory()->create();
+    $event = Event::findOrFail(
+        $this->actingAs($user)->postJson('/api/events', eventPayload())->json('data.id'),
+    );
+    $mealValue = $event->activeRegistrationForm()->firstOrFail()
+        ->fields()->where('key', 'meal')->firstOrFail()
+        ->options()->firstOrFail()->value;
+
+    $response = $this->postJson('/api/registration/events/'.$event->slug, [
+        'answers' => [
+            'first-name' => 'Jamie',
+            'last-name' => 'Rivera',
+            'work-email' => 'jamie@example.com',
+            'meal' => $mealValue,
+        ],
+    ])->assertCreated()->assertJsonPath('email_sent', true);
+
+    $registrationCode = $response->json('data.registration_code');
+
+    Mail::assertSent(RegistrationConfirmation::class, function (RegistrationConfirmation $mail) use ($event, $registrationCode): bool {
+        $mail->assertHasTo('jamie@example.com');
+        $mail->assertHasSubject('Your QR pass: '.$event->title);
+        $mail->assertSeeInHtml('Jamie Rivera');
+        $mail->assertSeeInHtml($registrationCode);
+        $mail->assertHasAttachedData($mail->qrPng, 'attendee-qr-pass.png', ['mime' => 'image/png']);
+
+        expect($mail->registration->registration_code)->toBe($registrationCode)
+            ->and(substr($mail->qrPng, 0, 8))->toBe("\x89PNG\r\n\x1a\n");
+
+        return true;
+    });
+});
+
+test('a mail delivery failure does not discard the registration or qr code', function () {
+    Mail::shouldReceive('to')->once()->with('jamie@example.com')->andThrow(new RuntimeException('Mail transport unavailable'));
+    $user = User::factory()->create();
+    $event = Event::findOrFail(
+        $this->actingAs($user)->postJson('/api/events', eventPayload())->json('data.id'),
+    );
+    $mealValue = $event->activeRegistrationForm()->firstOrFail()
+        ->fields()->where('key', 'meal')->firstOrFail()
+        ->options()->firstOrFail()->value;
+
+    $response = $this->postJson('/api/registration/events/'.$event->slug, [
+        'answers' => [
+            'first-name' => 'Jamie',
+            'last-name' => 'Rivera',
+            'work-email' => 'jamie@example.com',
+            'meal' => $mealValue,
+        ],
+    ]);
+
+    $response
+        ->assertCreated()
+        ->assertJsonPath('email_sent', false)
+        ->assertJsonPath('message', 'Registration completed, but the QR email could not be delivered. Download your QR pass now.');
+
+    expect($response->json('data.registration_code'))->toStartWith('REG-');
+    $this->assertDatabaseHas('registrations', [
+        'registration_code' => $response->json('data.registration_code'),
+        'status' => 'confirmed',
+    ]);
+});
+
 test('an attendee cannot register for the same event twice', function () {
     $user = User::factory()->create();
     $event = Event::findOrFail(
@@ -151,6 +220,239 @@ test('an event owner can check in a registered attendee', function () {
     $this->actingAs($user)->postJson('/api/events/'.$event->slug.'/check-ins', [
         'registration_code' => $registration->registration_code,
     ])->assertConflict()->assertJsonPath('data.result', 'duplicate');
+});
+
+test('a scanner can list published events that start today regardless of their exact time', function () {
+    Carbon::setTestNow(Carbon::parse('2026-09-25T06:00:00Z'));
+
+    try {
+        $admin = User::factory()->create();
+        $scanner = User::factory()->scanner()->create();
+
+        $endedTodayPayload = eventPayload();
+        $endedTodayPayload['title'] = 'Ended Earlier Today';
+        $endedTodayPayload['starts_at'] = '2026-09-25T01:00:00+08:00';
+        $endedTodayPayload['ends_at'] = '2026-09-25T02:00:00+08:00';
+        $endedToday = Event::findOrFail(
+            $this->actingAs($admin)->postJson('/api/events', $endedTodayPayload)->json('data.id'),
+        );
+
+        $laterTodayPayload = eventPayload();
+        $laterTodayPayload['title'] = 'Starting Later Today';
+        $laterTodayPayload['starts_at'] = '2026-09-25T23:00:00+08:00';
+        $laterTodayPayload['ends_at'] = '2026-09-25T23:30:00+08:00';
+        $laterToday = Event::findOrFail(
+            $this->actingAs($admin)->postJson('/api/events', $laterTodayPayload)->json('data.id'),
+        );
+
+        $yesterdayPayload = eventPayload();
+        $yesterdayPayload['title'] = 'Started Yesterday';
+        $yesterdayPayload['starts_at'] = '2026-09-24T23:00:00+08:00';
+        $yesterdayPayload['ends_at'] = '2026-09-25T23:00:00+08:00';
+        $this->actingAs($admin)->postJson('/api/events', $yesterdayPayload)->assertCreated();
+
+        $tomorrowPayload = eventPayload();
+        $tomorrowPayload['title'] = 'Starting Tomorrow';
+        $tomorrowPayload['starts_at'] = '2026-09-26T01:00:00+08:00';
+        $tomorrowPayload['ends_at'] = '2026-09-26T02:00:00+08:00';
+        $this->actingAs($admin)->postJson('/api/events', $tomorrowPayload)->assertCreated();
+
+        $draftPayload = $laterTodayPayload;
+        $draftPayload['title'] = 'Today Private Draft';
+        $draftPayload['status'] = 'draft';
+        $this->actingAs($admin)->postJson('/api/events', $draftPayload)->assertCreated();
+
+        $this->actingAs($scanner)
+            ->getJson('/api/scanner/events')
+            ->assertOk()
+            ->assertJsonCount(2, 'data')
+            ->assertJsonFragment(['slug' => $endedToday->slug])
+            ->assertJsonFragment(['slug' => $laterToday->slug])
+            ->assertJsonMissing(['title' => 'Started Yesterday'])
+            ->assertJsonMissing(['title' => 'Starting Tomorrow'])
+            ->assertJsonMissing(['title' => 'Today Private Draft']);
+    } finally {
+        Carbon::setTestNow();
+    }
+});
+
+test('the scanner event query limits timezone candidates in the database', function () {
+    $scanner = User::factory()->scanner()->create();
+    DB::flushQueryLog();
+    DB::enableQueryLog();
+
+    try {
+        $this->actingAs($scanner)->getJson('/api/scanner/events')->assertOk();
+
+        $eventQuery = collect(DB::getQueryLog())->first(
+            fn (array $query): bool => str_contains(strtolower($query['query']), 'from "events"'),
+        );
+
+        expect($eventQuery)->not->toBeNull()
+            ->and(strtolower($eventQuery['query']))->toContain('"starts_at" between');
+    } finally {
+        DB::disableQueryLog();
+    }
+});
+
+test('event timestamps with offsets are normalized before ongoing filtering', function () {
+    Carbon::setTestNow(Carbon::parse('2026-09-25T04:30:00Z'));
+
+    try {
+        $admin = User::factory()->create();
+        $scanner = User::factory()->scanner()->create();
+        $payload = eventPayload();
+        $payload['starts_at'] = '2026-09-25T12:00:00+08:00';
+        $payload['ends_at'] = '2026-09-25T13:00:00+08:00';
+
+        $event = Event::findOrFail(
+            $this->actingAs($admin)->postJson('/api/events', $payload)->json('data.id'),
+        );
+
+        expect($event->getRawOriginal('starts_at'))->toBe('2026-09-25 04:00:00')
+            ->and($event->getRawOriginal('ends_at'))->toBe('2026-09-25 05:00:00');
+
+        $this->actingAs($scanner)
+            ->getJson('/api/scanner/events')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.slug', $event->slug);
+    } finally {
+        Carbon::setTestNow();
+    }
+});
+
+test('a scanner can check in a registered attendee by registration code', function () {
+    $admin = User::factory()->create();
+    $scanner = User::factory()->scanner()->create();
+    $payload = eventPayload();
+    $payload['starts_at'] = now('Asia/Manila')->startOfDay()->addHour()->toIso8601String();
+    $payload['ends_at'] = now('Asia/Manila')->startOfDay()->addHours(2)->toIso8601String();
+    $event = Event::findOrFail(
+        $this->actingAs($admin)->postJson('/api/events', $payload)->json('data.id'),
+    );
+    $registration = $event->registrations()->create([
+        'registration_form_id' => $event->activeRegistrationForm()->firstOrFail()->id,
+        'attendee_id' => Attendee::create([
+            'first_name' => 'Alex',
+            'last_name' => 'Santos',
+            'email' => 'alex@example.com',
+            'email_normalized' => 'alex@example.com',
+        ])->id,
+        'registration_code' => 'REG-SCANNER01',
+        'status' => 'confirmed',
+        'source' => 'public_form',
+        'registered_at' => now(),
+        'confirmed_at' => now(),
+    ]);
+
+    $this->actingAs($scanner)
+        ->postJson('/api/events/'.$event->slug.'/check-ins', [
+            'registration_code' => $registration->registration_code,
+            'gate' => 'Scanner',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('data.result', 'accepted')
+        ->assertJsonPath('data.registration.attendee.email', 'alex@example.com');
+});
+
+test('a scanner cannot check into a published event that starts on another day', function () {
+    $admin = User::factory()->create();
+    $scanner = User::factory()->scanner()->create();
+    $event = Event::findOrFail(
+        $this->actingAs($admin)->postJson('/api/events', eventPayload())->json('data.id'),
+    );
+    $registration = $event->registrations()->create([
+        'registration_form_id' => $event->activeRegistrationForm()->firstOrFail()->id,
+        'attendee_id' => Attendee::create([
+            'first_name' => 'Future',
+            'last_name' => 'Attendee',
+            'email' => 'future@example.com',
+            'email_normalized' => 'future@example.com',
+        ])->id,
+        'registration_code' => 'REG-FUTURE01',
+        'status' => 'confirmed',
+        'source' => 'public_form',
+        'registered_at' => now(),
+        'confirmed_at' => now(),
+    ]);
+
+    $this->actingAs($scanner)
+        ->postJson('/api/events/'.$event->slug.'/check-ins', [
+            'registration_code' => $registration->registration_code,
+        ])
+        ->assertNotFound();
+
+    $this->assertDatabaseCount('check_ins', 0);
+});
+
+test('a scanner cannot check attendees into a draft event', function () {
+    $admin = User::factory()->create();
+    $scanner = User::factory()->scanner()->create();
+    $payload = eventPayload();
+    $payload['status'] = 'draft';
+    $event = Event::findOrFail(
+        $this->actingAs($admin)->postJson('/api/events', $payload)->json('data.id'),
+    );
+    $registration = $event->registrations()->create([
+        'registration_form_id' => $event->activeRegistrationForm()->firstOrFail()->id,
+        'attendee_id' => Attendee::create([
+            'first_name' => 'Draft',
+            'last_name' => 'Attendee',
+            'email' => 'draft@example.com',
+            'email_normalized' => 'draft@example.com',
+        ])->id,
+        'registration_code' => 'REG-DRAFT001',
+        'status' => 'confirmed',
+        'source' => 'public_form',
+        'registered_at' => now(),
+        'confirmed_at' => now(),
+    ]);
+
+    $this->actingAs($scanner)
+        ->postJson('/api/events/'.$event->slug.'/check-ins', [
+            'registration_code' => $registration->registration_code,
+        ])
+        ->assertNotFound();
+
+    $this->assertDatabaseCount('check_ins', 0);
+});
+
+test('cancelled and rejected registrations cannot be checked in', function () {
+    $admin = User::factory()->create();
+    $scanner = User::factory()->scanner()->create();
+    $payload = eventPayload();
+    $payload['starts_at'] = now('Asia/Manila')->startOfDay()->addHour()->toIso8601String();
+    $payload['ends_at'] = now('Asia/Manila')->startOfDay()->addHours(2)->toIso8601String();
+    $event = Event::findOrFail(
+        $this->actingAs($admin)->postJson('/api/events', $payload)->json('data.id'),
+    );
+    foreach (['cancelled', 'rejected'] as $status) {
+        $email = $status.'@example.com';
+        $attendee = Attendee::create([
+            'first_name' => ucfirst($status),
+            'last_name' => 'Attendee',
+            'email' => $email,
+            'email_normalized' => $email,
+        ]);
+        $registration = $event->registrations()->create([
+            'registration_form_id' => $event->activeRegistrationForm()->firstOrFail()->id,
+            'attendee_id' => $attendee->id,
+            'registration_code' => 'REG-'.strtoupper($status),
+            'status' => $status,
+            'source' => 'public_form',
+            'registered_at' => now(),
+            'confirmed_at' => now(),
+        ]);
+
+        $this->actingAs($scanner)
+            ->postJson('/api/events/'.$event->slug.'/check-ins', [
+                'registration_code' => $registration->registration_code,
+            ])
+            ->assertNotFound();
+    }
+
+    $this->assertDatabaseCount('check_ins', 0);
 });
 
 test('an event owner can update an event and publish a new form version', function () {

@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\EventController;
+use App\Http\Controllers\PasswordController;
 use App\Http\Controllers\PublicRegistrationController;
 use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
@@ -21,6 +22,12 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::post('/logout', [AuthenticatedSessionController::class, 'destroy']);
+    Route::put('/password', [PasswordController::class, 'update']);
+
+    Route::middleware('role:Admin,Scanner')->group(function () {
+        Route::get('/scanner/events', [EventController::class, 'scannerEvents']);
+        Route::post('/events/{event:slug}/check-ins', [EventController::class, 'checkIn']);
+    });
 
     Route::middleware('role:Admin')->group(function () {
         Route::apiResource('users', UserController::class)->except(['show']);
@@ -32,6 +39,5 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/events/{event:slug}/registrations/export', [EventController::class, 'registrationExport']);
         Route::get('/events/{event:slug}/invitations', [EventController::class, 'invitations']);
         Route::post('/events/{event:slug}/invitations', [EventController::class, 'sendInvitation']);
-        Route::post('/events/{event:slug}/check-ins', [EventController::class, 'checkIn']);
     });
 });

@@ -2,12 +2,20 @@
 
 namespace App\Http\Controllers;
 
+use App\Mail\RegistrationConfirmation;
 use App\Models\Attendee;
 use App\Models\Event;
 use App\Models\Registration;
+use Endroid\QrCode\Builder\Builder;
+use Endroid\QrCode\Encoding\Encoding;
+use Endroid\QrCode\ErrorCorrectionLevel;
+use Endroid\QrCode\RoundBlockSizeMode;
+use Endroid\QrCode\Writer\PngWriter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -102,9 +110,37 @@ class PublicRegistrationController extends Controller
             return $registration;
         });
 
+        $registration->load(['attendee', 'event', 'answers.field']);
+        $emailSent = false;
+
+        try {
+            $qrPng = Builder::create()
+                ->writer(new PngWriter())
+                ->data($registration->registration_code)
+                ->encoding(new Encoding('ISO-8859-1'))
+                ->errorCorrectionLevel(ErrorCorrectionLevel::Medium)
+                ->size(300)
+                ->margin(12)
+                ->roundBlockSizeMode(RoundBlockSizeMode::Margin)
+                ->build()
+                ->getString();
+
+            Mail::to($registration->attendee->email)
+                ->send(new RegistrationConfirmation($registration, $qrPng));
+            $emailSent = true;
+        } catch (\Throwable $exception) {
+            Log::warning('Registration QR email delivery failed.', [
+                'registration_id' => $registration->id,
+                'exception' => $exception::class,
+            ]);
+        }
+
         return response()->json([
-            'data' => $registration->load(['attendee', 'answers.field']),
-            'message' => 'Registration completed successfully.',
+            'data' => $registration,
+            'email_sent' => $emailSent,
+            'message' => $emailSent
+                ? 'Registration completed successfully. Your QR pass was emailed to you.'
+                : 'Registration completed, but the QR email could not be delivered. Download your QR pass now.',
         ], 201);
     }
 
