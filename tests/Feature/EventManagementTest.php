@@ -222,7 +222,7 @@ test('an event owner can check in a registered attendee', function () {
     ])->assertConflict()->assertJsonPath('data.result', 'duplicate');
 });
 
-test('a scanner can list published events that start today regardless of their exact time', function () {
+test('a scanner can list published events from start-day midnight until their exact end time', function () {
     Carbon::setTestNow(Carbon::parse('2026-09-25T06:00:00Z'));
 
     try {
@@ -249,7 +249,9 @@ test('a scanner can list published events that start today regardless of their e
         $yesterdayPayload['title'] = 'Started Yesterday';
         $yesterdayPayload['starts_at'] = '2026-09-24T23:00:00+08:00';
         $yesterdayPayload['ends_at'] = '2026-09-25T23:00:00+08:00';
-        $this->actingAs($admin)->postJson('/api/events', $yesterdayPayload)->assertCreated();
+        $startedYesterday = Event::findOrFail(
+            $this->actingAs($admin)->postJson('/api/events', $yesterdayPayload)->json('data.id'),
+        );
 
         $tomorrowPayload = eventPayload();
         $tomorrowPayload['title'] = 'Starting Tomorrow';
@@ -266,9 +268,9 @@ test('a scanner can list published events that start today regardless of their e
             ->getJson('/api/scanner/events')
             ->assertOk()
             ->assertJsonCount(2, 'data')
-            ->assertJsonFragment(['slug' => $endedToday->slug])
             ->assertJsonFragment(['slug' => $laterToday->slug])
-            ->assertJsonMissing(['title' => 'Started Yesterday'])
+            ->assertJsonFragment(['slug' => $startedYesterday->slug])
+            ->assertJsonMissing(['slug' => $endedToday->slug])
             ->assertJsonMissing(['title' => 'Starting Tomorrow'])
             ->assertJsonMissing(['title' => 'Today Private Draft']);
     } finally {
@@ -289,7 +291,8 @@ test('the scanner event query limits timezone candidates in the database', funct
         );
 
         expect($eventQuery)->not->toBeNull()
-            ->and(strtolower($eventQuery['query']))->toContain('"starts_at" between');
+            ->and(strtolower($eventQuery['query']))->toContain('"starts_at" <=')
+            ->and(strtolower($eventQuery['query']))->toContain('"ends_at" >=');
     } finally {
         DB::disableQueryLog();
     }
@@ -327,7 +330,7 @@ test('a scanner can check in a registered attendee by registration code', functi
     $scanner = User::factory()->scanner()->create();
     $payload = eventPayload();
     $payload['starts_at'] = now('Asia/Manila')->startOfDay()->addHour()->toIso8601String();
-    $payload['ends_at'] = now('Asia/Manila')->startOfDay()->addHours(2)->toIso8601String();
+    $payload['ends_at'] = now('Asia/Manila')->addHours(2)->toIso8601String();
     $event = Event::findOrFail(
         $this->actingAs($admin)->postJson('/api/events', $payload)->json('data.id'),
     );
@@ -354,6 +357,45 @@ test('a scanner can check in a registered attendee by registration code', functi
         ->assertCreated()
         ->assertJsonPath('data.result', 'accepted')
         ->assertJsonPath('data.registration.attendee.email', 'alex@example.com');
+});
+
+test('a scanner cannot check into a published event after its exact end time', function () {
+    Carbon::setTestNow(Carbon::parse('2026-09-25T06:00:00Z'));
+
+    try {
+        $admin = User::factory()->create();
+        $scanner = User::factory()->scanner()->create();
+        $payload = eventPayload();
+        $payload['starts_at'] = '2026-09-25T01:00:00+08:00';
+        $payload['ends_at'] = '2026-09-25T02:00:00+08:00';
+        $event = Event::findOrFail(
+            $this->actingAs($admin)->postJson('/api/events', $payload)->json('data.id'),
+        );
+        $registration = $event->registrations()->create([
+            'registration_form_id' => $event->activeRegistrationForm()->firstOrFail()->id,
+            'attendee_id' => Attendee::create([
+                'first_name' => 'Ended',
+                'last_name' => 'Attendee',
+                'email' => 'ended@example.com',
+                'email_normalized' => 'ended@example.com',
+            ])->id,
+            'registration_code' => 'REG-ENDED001',
+            'status' => 'confirmed',
+            'source' => 'public_form',
+            'registered_at' => now(),
+            'confirmed_at' => now(),
+        ]);
+
+        $this->actingAs($scanner)
+            ->postJson('/api/events/'.$event->slug.'/check-ins', [
+                'registration_code' => $registration->registration_code,
+            ])
+            ->assertNotFound();
+
+        $this->assertDatabaseCount('check_ins', 0);
+    } finally {
+        Carbon::setTestNow();
+    }
 });
 
 test('a scanner cannot check into a published event that starts on another day', function () {
@@ -423,7 +465,7 @@ test('cancelled and rejected registrations cannot be checked in', function () {
     $scanner = User::factory()->scanner()->create();
     $payload = eventPayload();
     $payload['starts_at'] = now('Asia/Manila')->startOfDay()->addHour()->toIso8601String();
-    $payload['ends_at'] = now('Asia/Manila')->startOfDay()->addHours(2)->toIso8601String();
+    $payload['ends_at'] = now('Asia/Manila')->addHours(2)->toIso8601String();
     $event = Event::findOrFail(
         $this->actingAs($admin)->postJson('/api/events', $payload)->json('data.id'),
     );

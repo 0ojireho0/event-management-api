@@ -16,7 +16,8 @@ use Illuminate\Support\Str;
 
 class EventController extends Controller
 {
-    public function index(Request $request): JsonResponse{
+    public function index(Request $request): JsonResponse
+    {
         $now = now();
 
         $events = Event::query()
@@ -50,10 +51,8 @@ class EventController extends Controller
         $now = now();
         $events = Event::query()
             ->where('status', 'published')
-            ->whereBetween('starts_at', [
-                $now->copy()->subHours(48),
-                $now->copy()->addHours(48),
-            ])
+            ->where('starts_at', '<=', $now->copy()->addHours(48))
+            ->where('ends_at', '>=', $now)
             ->when(
                 $request->user()->isAdmin(),
                 fn ($query) => $query->where('created_by', $request->user()->id),
@@ -62,7 +61,7 @@ class EventController extends Controller
             ->withCount(['registrations', 'acceptedCheckIns'])
             ->orderBy('starts_at')
             ->get()
-            ->filter(fn (Event $event): bool => $this->isScannerEventAvailable($event))
+            ->filter(fn (Event $event): bool => $this->isScannerEventAvailable($event, $now))
             ->values();
 
         return response()->json(['data' => $events]);
@@ -311,16 +310,21 @@ class EventController extends Controller
         abort_unless($event->created_by === $request->user()->id, 404);
     }
 
-    private function isScannerEventAvailable(Event $event): bool
+    private function isScannerEventAvailable(Event $event, ?Carbon $at = null): bool
     {
         if ($event->status !== 'published') {
             return false;
         }
 
-        return $event->starts_at
+        $at ??= now();
+        $availableFrom = $event->starts_at
             ->copy()
             ->setTimezone($event->timezone)
-            ->toDateString() === now($event->timezone)->toDateString();
+            ->startOfDay()
+            ->utc();
+
+        return $at->greaterThanOrEqualTo($availableFrom)
+            && $at->lessThanOrEqualTo($event->ends_at);
     }
 
     private function normalizedEventData(StoreEventRequest $request): array
