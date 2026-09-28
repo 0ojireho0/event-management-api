@@ -36,6 +36,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/events', [EventController::class, 'store']);
         Route::get('/events/{event:slug}', [EventController::class, 'show']);
         Route::get('/events/{event:slug}/raffle', [RaffleController::class, 'show']);
+        Route::post('/events/{event:slug}/raffle/draws', [RaffleController::class, 'store']);
+        Route::post('/events/{event:slug}/raffle/draws/{draw}/confirm', [RaffleController::class, 'confirm']);
+        Route::delete('/events/{event:slug}/raffle/draws/{draw}', [RaffleController::class, 'destroy']);
         Route::match(['put', 'patch'], '/events/{event:slug}', [EventController::class, 'update']);
         Route::get('/events/{event:slug}/registrations', [EventController::class, 'registrations']);
         Route::get('/events/{event:slug}/registrations/export', [EventController::class, 'registrationExport']);
