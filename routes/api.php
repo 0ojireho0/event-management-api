@@ -4,6 +4,7 @@ use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\EventController;
 use App\Http\Controllers\PasswordController;
 use App\Http\Controllers\PublicRegistrationController;
+use App\Http\Controllers\RaffleController;
 use App\Http\Controllers\UserController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -34,6 +35,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/events', [EventController::class, 'index']);
         Route::post('/events', [EventController::class, 'store']);
         Route::get('/events/{event:slug}', [EventController::class, 'show']);
+        Route::get('/events/{event:slug}/raffle', [RaffleController::class, 'show']);
         Route::match(['put', 'patch'], '/events/{event:slug}', [EventController::class, 'update']);
         Route::get('/events/{event:slug}/registrations', [EventController::class, 'registrations']);
         Route::get('/events/{event:slug}/registrations/export', [EventController::class, 'registrationExport']);

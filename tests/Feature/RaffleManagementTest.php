@@ -2,11 +2,13 @@
 
 use App\Models\Attendee;
 use App\Models\Event;
+use App\Models\FormField;
 use App\Models\Registration;
 use App\Models\RegistrationForm;
 use App\Models\User;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 function raffleRegistration(User $owner, Attendee $attendee, string $slug): array
 {
@@ -30,6 +32,24 @@ function raffleRegistration(User $owner, Attendee $attendee, string $slug): arra
     ]);
 
     return [$event, $registration];
+}
+
+function raffleAddRegistration(Event $event, string $email, string $status = 'confirmed'): Registration
+{
+    $attendee = Attendee::create([
+        'first_name' => ucfirst(explode('@', $email)[0]),
+        'last_name' => 'Guest',
+        'email' => $email,
+        'email_normalized' => $email,
+    ]);
+
+    return $event->registrations()->create([
+        'registration_form_id' => $event->registrationForms()->firstOrFail()->id,
+        'attendee_id' => $attendee->id,
+        'registration_code' => 'RAFFLE-'.$event->id.'-'.$attendee->id,
+        'status' => $status,
+        'registered_at' => now(),
+    ]);
 }
 
 test('an event stores raffle draw lifecycle records', function () {
@@ -139,4 +159,147 @@ test('the same attendee can win raffles in different events', function () {
         ->and($secondEvent->raffleWinners()->count())->toBe(1)
         ->and($firstRegistration->raffleWinner->registration_id)->toBe($firstRegistration->id)
         ->and($secondRegistration->raffleWinner->registration_id)->toBe($secondRegistration->id);
+});
+
+test('raffle state includes confirmed registrations with or without check in and excludes winners and active reservations', function () {
+    $this->travelTo(Carbon::parse('2026-09-28 10:00:00'));
+    $owner = User::factory()->create();
+    $attendee = Attendee::create(['first_name' => 'Jamie', 'last_name' => 'Rivera', 'email' => 'jamie@example.com', 'email_normalized' => 'jamie@example.com']);
+    [$event, $checkedIn] = raffleRegistration($owner, $attendee, 'raffle-state');
+    $checkedIn->checkIns()->create(['result' => 'accepted', 'checked_in_at' => now()]);
+    $notCheckedIn = raffleAddRegistration($event, 'no-check-in@example.com');
+    raffleAddRegistration($event, 'rejected@example.com', 'rejected');
+    raffleAddRegistration($event, 'cancelled@example.com', 'cancelled');
+    $won = raffleAddRegistration($event, 'winner@example.com');
+    $wonDraw = $event->raffleDraws()->create(['registration_id' => $won->id, 'status' => 'confirmed', 'selected_at' => now()->subMinutes(5), 'expires_at' => now()->addMinutes(5)]);
+    $event->raffleWinners()->create(['registration_id' => $won->id, 'raffle_draw_id' => $wonDraw->id, 'won_at' => now()->subMinute()]);
+    $reserved = raffleAddRegistration($event, 'reserved@example.com');
+    $pending = $event->raffleDraws()->create(['registration_id' => $reserved->id, 'status' => 'pending', 'selected_at' => now(), 'expires_at' => now()->addMinutes(10)]);
+    $expired = raffleAddRegistration($event, 'expired@example.com');
+    $event->raffleDraws()->create(['registration_id' => $expired->id, 'status' => 'pending', 'selected_at' => now()->subMinutes(11), 'expires_at' => now()->subMinute()]);
+
+    $response = $this->actingAs($owner)->getJson('/api/events/'.$event->slug.'/raffle')->assertOk();
+
+    expect(collect($response->json('data.eligible_attendees'))->pluck('registration_id')->sort()->values()->all())
+        ->toBe(collect([$checkedIn->id, $notCheckedIn->id, $expired->id])->sort()->values()->all());
+    $response->assertJsonPath('data.eligible_count', 3)
+        ->assertJsonPath('data.pending_draw.id', $pending->id)
+        ->assertJsonPath('data.pending_draw.registration_id', $reserved->id)
+        ->assertJsonPath('data.event.id', $event->id)
+        ->assertJsonCount(1, 'data.winners');
+});
+
+test('raffle state masks email and omits raw identity and answers', function () {
+    $owner = User::factory()->create();
+    $attendee = Attendee::create(['first_name' => 'Jamie', 'last_name' => 'Rivera', 'email' => 'jamie@example.com', 'email_normalized' => 'jamie@example.com']);
+    [$event, $registration] = raffleRegistration($owner, $attendee, 'raffle-privacy');
+    $field = FormField::create([
+        'registration_form_id' => $event->registrationForms()->firstOrFail()->id,
+        'key' => 'secret-answer',
+        'type' => 'short',
+        'label' => 'Private answer',
+    ]);
+    $registration->answers()->create(['form_field_id' => $field->id, 'answer' => ['value' => 'private-answer-marker']]);
+
+    $response = $this->actingAs($owner)->getJson('/api/events/'.$event->slug.'/raffle')->assertOk();
+
+    $response->assertJsonPath('data.eligible_attendees.0', [
+        'registration_id' => $registration->id,
+        'first_name' => 'Jamie',
+        'last_name' => 'Rivera',
+        'masked_email' => 'j***@example.com',
+    ]);
+    expect($response->getContent())->not->toContain('jamie@example.com', 'private-answer-marker', 'answers', 'email_normalized');
+});
+
+test('only the event owner admin can read raffle state', function () {
+    $owner = User::factory()->create();
+    $otherAdmin = User::factory()->create();
+    $scanner = User::factory()->scanner()->create();
+    $attendee = Attendee::create(['first_name' => 'Jamie', 'last_name' => 'Rivera', 'email' => 'jamie@example.com', 'email_normalized' => 'jamie@example.com']);
+    [$event] = raffleRegistration($owner, $attendee, 'raffle-access');
+
+    $this->actingAs($otherAdmin)->getJson('/api/events/'.$event->slug.'/raffle')->assertNotFound();
+    $this->actingAs($scanner)->getJson('/api/events/'.$event->slug.'/raffle')->assertForbidden();
+});
+
+test('raffle state returns all 1005 eligible registrations with bounded queries', function () {
+    $owner = User::factory()->create();
+    $attendee = Attendee::create(['first_name' => 'First', 'last_name' => 'Guest', 'email' => 'first@example.com', 'email_normalized' => 'first@example.com']);
+    [$event] = raffleRegistration($owner, $attendee, 'raffle-large');
+    $formId = $event->registrationForms()->firstOrFail()->id;
+    $stamp = now()->toDateTimeString();
+    foreach (array_chunk(range(2, 1005), 200) as $numbers) {
+        DB::table('attendees')->insert(array_map(fn (int $n) => [
+            'first_name' => 'Guest', 'last_name' => (string) $n,
+            'email' => "guest{$n}@example.com", 'email_normalized' => "guest{$n}@example.com",
+            'created_at' => $stamp, 'updated_at' => $stamp,
+        ], $numbers));
+    }
+    $attendeeIds = DB::table('attendees')->where('email', 'like', 'guest%@example.com')->pluck('id');
+    foreach ($attendeeIds->chunk(200) as $chunk) {
+        DB::table('registrations')->insert($chunk->map(fn (int $id) => [
+            'event_id' => $event->id, 'registration_form_id' => $formId, 'attendee_id' => $id,
+            'registration_code' => 'RAFFLE-BULK-'.$id, 'status' => 'confirmed',
+            'registered_at' => $stamp, 'created_at' => $stamp, 'updated_at' => $stamp,
+        ])->all());
+    }
+
+    DB::enableQueryLog();
+    DB::flushQueryLog();
+    $response = $this->actingAs($owner)->getJson('/api/events/'.$event->slug.'/raffle')->assertOk();
+    $queryCount = count(DB::getQueryLog());
+    DB::disableQueryLog();
+
+    $ids = collect($response->json('data.eligible_attendees'))->pluck('registration_id');
+    expect($ids)->toHaveCount(1005)
+        ->and($ids->unique())->toHaveCount(1005)
+        ->and($queryCount)->toBeLessThanOrEqual(10);
+    $response->assertJsonPath('data.eligible_count', 1005);
+});
+
+test('raffle state returns newest confirmed winners first', function () {
+    $owner = User::factory()->create();
+    $attendee = Attendee::create(['first_name' => 'Jamie', 'last_name' => 'Rivera', 'email' => 'jamie@example.com', 'email_normalized' => 'jamie@example.com']);
+    [$event, $first] = raffleRegistration($owner, $attendee, 'raffle-history');
+    $second = raffleAddRegistration($event, 'second@example.com');
+    foreach ([[$first, '2026-09-28 09:00:00'], [$second, '2026-09-28 10:00:00']] as [$registration, $wonAt]) {
+        $draw = $event->raffleDraws()->create(['registration_id' => $registration->id, 'status' => 'confirmed', 'selected_at' => $wonAt, 'expires_at' => '2026-09-28 10:10:00']);
+        $event->raffleWinners()->create(['registration_id' => $registration->id, 'raffle_draw_id' => $draw->id, 'won_at' => $wonAt]);
+    }
+
+    $response = $this->actingAs($owner)->getJson('/api/events/'.$event->slug.'/raffle')->assertOk();
+
+    expect(collect($response->json('data.winners'))->pluck('registration_id')->all())->toBe([$second->id, $first->id]);
+    $response->assertJsonPath('data.winners.0.first_name', 'Second')
+        ->assertJsonPath('data.winners.0.masked_email', 's***@example.com')
+        ->assertJsonPath('data.winners.0.won_at', '2026-09-28T10:00:00.000000Z')
+        ->assertJsonPath('data.winners.1.registration_id', $first->id);
+});
+
+test('raffle state ignores draw and winner records whose registration belongs to another event', function () {
+    $owner = User::factory()->create();
+    $firstAttendee = Attendee::create(['first_name' => 'First', 'last_name' => 'Guest', 'email' => 'first@example.com', 'email_normalized' => 'first@example.com']);
+    $secondAttendee = Attendee::create(['first_name' => 'Second', 'last_name' => 'Guest', 'email' => 'second@example.com', 'email_normalized' => 'second@example.com']);
+    [$firstEvent, $firstRegistration] = raffleRegistration($owner, $firstAttendee, 'raffle-scoped-first');
+    [$secondEvent, $secondRegistration] = raffleRegistration($owner, $secondAttendee, 'raffle-scoped-second');
+    $foreignDraw = $firstEvent->raffleDraws()->create([
+        'registration_id' => $secondRegistration->id,
+        'status' => 'pending',
+        'selected_at' => now(),
+        'expires_at' => now()->addMinutes(10),
+    ]);
+    $firstEvent->raffleWinners()->create([
+        'registration_id' => $secondRegistration->id,
+        'raffle_draw_id' => $foreignDraw->id,
+        'won_at' => now(),
+    ]);
+
+    $firstResponse = $this->actingAs($owner)->getJson('/api/events/'.$firstEvent->slug.'/raffle')->assertOk();
+    $firstResponse->assertJsonPath('data.pending_draw', null)
+        ->assertJsonCount(0, 'data.winners')
+        ->assertJsonPath('data.eligible_attendees.0.registration_id', $firstRegistration->id);
+
+    $secondResponse = $this->getJson('/api/events/'.$secondEvent->slug.'/raffle')->assertOk();
+    $secondResponse->assertJsonPath('data.eligible_attendees.0.registration_id', $secondRegistration->id);
 });
