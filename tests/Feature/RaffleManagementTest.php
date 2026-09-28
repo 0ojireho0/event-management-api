@@ -418,8 +418,8 @@ test('cross event mutations return 404 without changing the draw', function () {
     $draw = $this->actingAs($owner)->postJson("/api/events/{$first->slug}/raffle/draws")->assertCreated()->json('data.draw.id');
     $foreignUrl = "/api/events/{$second->slug}/raffle/draws/{$draw}";
 
-    $this->postJson("{$foreignUrl}/confirm")->assertNotFound();
-    $this->deleteJson($foreignUrl)->assertNotFound();
+    $this->postJson("{$foreignUrl}/confirm")->assertNotFound()->assertExactJson(['message' => 'Raffle draw not found.']);
+    $this->deleteJson($foreignUrl)->assertNotFound()->assertExactJson(['message' => 'Raffle draw not found.']);
     $this->assertDatabaseHas('raffle_draws', ['id' => $draw, 'status' => 'pending']);
     $this->assertDatabaseCount('raffle_winners', 0);
 });
@@ -432,9 +432,21 @@ test('draws paired with another event registration cannot be confirmed or cancel
     $draw = $first->raffleDraws()->create(['registration_id' => $otherRegistration->id, 'status' => 'pending', 'selected_at' => now(), 'expires_at' => now()->addMinutes(10)]);
     $url = "/api/events/{$first->slug}/raffle/draws/{$draw->id}";
 
-    $this->actingAs($owner)->postJson("{$url}/confirm")->assertNotFound();
-    $this->deleteJson($url)->assertNotFound();
+    $this->actingAs($owner)->postJson("{$url}/confirm")->assertNotFound()->assertExactJson(['message' => 'Raffle draw not found.']);
+    $this->deleteJson($url)->assertNotFound()->assertExactJson(['message' => 'Raffle draw not found.']);
     $this->assertDatabaseHas('raffle_draws', ['id' => $draw->id, 'status' => 'pending']);
+    $this->assertDatabaseCount('raffle_winners', 0);
+});
+
+test('nonexistent draw mutations return a safe not found body', function () {
+    $owner = User::factory()->create();
+    $attendee = Attendee::create(['first_name' => 'Jamie', 'last_name' => 'Rivera', 'email' => 'jamie@example.com', 'email_normalized' => 'jamie@example.com']);
+    [$event] = raffleRegistration($owner, $attendee, 'raffle-missing-draw');
+    $url = "/api/events/{$event->slug}/raffle/draws/999999";
+
+    $this->actingAs($owner)->postJson("{$url}/confirm")->assertNotFound()->assertExactJson(['message' => 'Raffle draw not found.']);
+    $this->deleteJson($url)->assertNotFound()->assertExactJson(['message' => 'Raffle draw not found.']);
+    $this->assertDatabaseCount('raffle_draws', 0);
     $this->assertDatabaseCount('raffle_winners', 0);
 });
 

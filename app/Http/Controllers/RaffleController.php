@@ -125,14 +125,25 @@ class RaffleController extends Controller
         });
     }
 
-    public function confirm(Request $request, Event $event, RaffleDraw $draw): JsonResponse
+    public function confirm(Request $request, Event $event, string $draw): JsonResponse
     {
         abort_unless($event->created_by === $request->user()->id, 404);
 
         return DB::transaction(function () use ($event, $draw, $request): JsonResponse {
-            Event::whereKey($event->id)->lockForUpdate()->firstOrFail();
-            $draw = $event->raffleDraws()->whereKey($draw->id)->lockForUpdate()->firstOrFail();
-            $registration = $event->registrations()->whereKey($draw->registration_id)->lockForUpdate()->with('attendee')->firstOrFail();
+            $lockedEvent = Event::whereKey($event->id)->lockForUpdate()->first();
+            if (! $lockedEvent || $lockedEvent->created_by !== $request->user()->id) {
+                return $this->drawNotFound();
+            }
+
+            $draw = $lockedEvent->raffleDraws()->whereKey($draw)->lockForUpdate()->first();
+            if (! $draw) {
+                return $this->drawNotFound();
+            }
+
+            $registration = $lockedEvent->registrations()->whereKey($draw->registration_id)->lockForUpdate()->with('attendee')->first();
+            if (! $registration) {
+                return $this->drawNotFound();
+            }
             $now = now();
 
             if ($draw->status !== RaffleDraw::STATUS_PENDING || $draw->expires_at->lte($now)) {
@@ -163,14 +174,25 @@ class RaffleController extends Controller
         });
     }
 
-    public function destroy(Request $request, Event $event, RaffleDraw $draw): JsonResponse
+    public function destroy(Request $request, Event $event, string $draw): JsonResponse
     {
         abort_unless($event->created_by === $request->user()->id, 404);
 
-        return DB::transaction(function () use ($event, $draw): JsonResponse {
-            Event::whereKey($event->id)->lockForUpdate()->firstOrFail();
-            $draw = $event->raffleDraws()->whereKey($draw->id)->lockForUpdate()->firstOrFail();
-            $registration = $event->registrations()->whereKey($draw->registration_id)->lockForUpdate()->with('attendee')->firstOrFail();
+        return DB::transaction(function () use ($event, $draw, $request): JsonResponse {
+            $lockedEvent = Event::whereKey($event->id)->lockForUpdate()->first();
+            if (! $lockedEvent || $lockedEvent->created_by !== $request->user()->id) {
+                return $this->drawNotFound();
+            }
+
+            $draw = $lockedEvent->raffleDraws()->whereKey($draw)->lockForUpdate()->first();
+            if (! $draw) {
+                return $this->drawNotFound();
+            }
+
+            $registration = $lockedEvent->registrations()->whereKey($draw->registration_id)->lockForUpdate()->with('attendee')->first();
+            if (! $registration) {
+                return $this->drawNotFound();
+            }
 
             if ($draw->status !== RaffleDraw::STATUS_PENDING) {
                 return response()->json(['message' => 'Draw is no longer pending.'], 409);
@@ -181,6 +203,11 @@ class RaffleController extends Controller
 
             return response()->json(['data' => $this->drawResponse($draw)]);
         });
+    }
+
+    private function drawNotFound(): JsonResponse
+    {
+        return response()->json(['message' => 'Raffle draw not found.'], 404);
     }
 
     private function drawResponse(RaffleDraw $draw): array
