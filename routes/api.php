@@ -11,6 +11,7 @@ use App\Http\Controllers\VotingResultController;
 use App\Http\Controllers\VotingSubjectController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 
 Route::post('/login', [AuthenticatedSessionController::class, 'store'])
     ->middleware('guest');
@@ -21,10 +22,12 @@ Route::prefix('registration/events')->group(function () {
 });
 
 Route::get('/voting/{subject:slug}', [PublicVotingController::class, 'show'])
-    ->middleware('throttle:60,1')
+    ->withoutMiddleware(EnsureFrontendRequestsAreStateful::class)
+    ->middleware('throttle:public-voting-lookup')
     ->missing(fn () => response()->json(['message' => 'Not Found'], 404));
 Route::post('/voting/{subject:slug}/votes', [PublicVotingController::class, 'store'])
-    ->middleware('throttle:10,1')
+    ->withoutMiddleware(EnsureFrontendRequestsAreStateful::class)
+    ->middleware('throttle:public-voting-submission')
     ->missing(fn () => response()->json(['message' => 'Not Found'], 404));
 
 Route::middleware('auth:sanctum')->group(function () {

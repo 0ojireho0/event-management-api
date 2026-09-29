@@ -4,6 +4,7 @@ use App\Models\Attendee;
 use App\Models\Event;
 use App\Models\User;
 use App\Models\VotingSubject;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
 
 function resultsEvent(User $owner, string $slug = 'results-event'): Event
@@ -144,4 +145,56 @@ test('result query count stays bounded with many contestants', function () {
 
     expect($response->json('contestants'))->toHaveCount(30)
         ->and(count($queries))->toBeLessThan(10);
+});
+
+test('one vote snapshot supplies totals and percentages when a vote arrives between result queries', function () {
+    $owner = User::factory()->create();
+    $event = resultsEvent($owner);
+    $subject = resultsSubject($event);
+    $contestant = $subject->contestants()->create(['name' => 'Alex', 'display_order' => 0]);
+    $firstRegistration = resultsRegistration($event, 1);
+    $lateRegistration = resultsRegistration($event, 2);
+    $subject->votes()->create(['voting_contestant_id' => $contestant->id, 'registration_id' => $firstRegistration]);
+
+    $inserted = false;
+    DB::listen(function (QueryExecuted $query) use (&$inserted, $subject, $contestant, $lateRegistration): void {
+        if (! $inserted && str_starts_with(strtolower($query->sql), 'select') && str_contains($query->sql, 'voting_votes')) {
+            $inserted = true;
+            $subject->votes()->create(['voting_contestant_id' => $contestant->id, 'registration_id' => $lateRegistration]);
+        }
+    });
+
+    $response = $this->actingAs($owner)->getJson(resultsUrl($event, $subject))->assertOk();
+    expect($inserted)->toBeTrue();
+    $response->assertJsonPath('total_votes', 1)->assertJsonPath('contestants.0.votes', 1)
+        ->assertJsonPath('contestants.0.percentage', 100)->assertJsonPath('participation_percentage', 50);
+    $this->getJson(resultsUrl($event, $subject))->assertOk()
+        ->assertJsonPath('total_votes', 2)->assertJsonPath('contestants.0.votes', 2)->assertJsonPath('contestants.0.percentage', 100);
+});
+
+test('result vote aggregation scans the subject index once without correlated contestant scans', function () {
+    $owner = User::factory()->create();
+    $event = resultsEvent($owner);
+    $subject = resultsSubject($event);
+    for ($i = 0; $i < 30; $i++) {
+        $contestant = $subject->contestants()->create(['name' => "Contestant {$i}", 'display_order' => $i]);
+        $subject->votes()->create(['voting_contestant_id' => $contestant->id, 'registration_id' => resultsRegistration($event, $i)]);
+    }
+
+    DB::enableQueryLog();
+    DB::flushQueryLog();
+    try {
+        $this->actingAs($owner)->getJson(resultsUrl($event, $subject))->assertOk()->assertJsonPath('total_votes', 30);
+        $voteQueries = array_values(array_filter(DB::getQueryLog(), fn (array $query): bool => str_contains($query['query'], 'voting_votes')));
+    } finally {
+        DB::disableQueryLog();
+    }
+
+    expect($voteQueries)->toHaveCount(1);
+    $query = $voteQueries[0];
+    expect(strtolower($query['query']))->toContain('group by')->not->toContain('select *');
+    $plan = DB::select('EXPLAIN QUERY PLAN '.$query['query'], $query['bindings']);
+    $details = strtoupper(implode('\n', array_column($plan, 'detail')));
+    expect($details)->not->toContain('CORRELATED')
+        ->toContain('SEARCH VOTING_VOTES USING COVERING INDEX VOTING_VOTES_VOTING_SUBJECT_ID_VOTING_CONTESTANT_ID_INDEX (VOTING_SUBJECT_ID=?)');
 });

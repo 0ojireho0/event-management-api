@@ -5,6 +5,9 @@ use App\Models\Event;
 use App\Models\Registration;
 use App\Models\User;
 use App\Models\VotingSubject;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+use Illuminate\Http\Request;
+use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 
 function publicVotingEvent(string $suffix = 'main'): Event
 {
@@ -209,4 +212,109 @@ test('vote submission validates required code and integer contestant id', functi
         'contestant_id' => 'not-an-id',
     ])->assertUnprocessable()->assertJsonValidationErrors(['contestant_id']);
     $this->assertDatabaseCount('voting_votes', 0);
+});
+
+test('frontend origin guests can vote with CSRF enforcement enabled while session routes remain protected', function () {
+    config(['sanctum.stateful' => ['localhost:3000']]);
+    $this->app->instance(ValidateCsrfToken::class, new class($this->app, $this->app['encrypter']) extends ValidateCsrfToken
+    {
+        protected function runningUnitTests(): bool
+        {
+            return false;
+        }
+    });
+    $headers = ['Origin' => 'http://localhost:3000', 'Referer' => 'http://localhost:3000/vote/ballot'];
+    $browserRequest = Request::create('/api/voting/ballot', 'POST', server: ['HTTP_ORIGIN' => $headers['Origin']]);
+    expect(EnsureFrontendRequestsAreStateful::fromFrontend($browserRequest))->toBeTrue();
+
+    $event = publicVotingEvent();
+    $subject = publicVotingSubject($event);
+    $registration = publicVotingRegistration($event, 'REG-BROWSER');
+    $lookup = $this->getJson("/api/voting/{$subject->slug}", $headers)->assertOk();
+    $this->postJson("/api/voting/{$subject->slug}/votes", [
+        'registration_code' => $registration->registration_code,
+        'contestant_id' => $subject->contestants()->first()->id,
+    ], $headers)->assertCreated()->assertCookieMissing(config('session.cookie'));
+    $lookup->assertCookieMissing(config('session.cookie'));
+
+    $this->postJson('/api/login', [], $headers)->assertStatus(419);
+    $this->actingAs(User::findOrFail($event->created_by));
+    $url = "/api/events/{$event->slug}/voting-subjects";
+    $payload = ['title' => 'Browser award', 'contestants' => [['name' => 'Ava'], ['name' => 'Bea']]];
+    $this->postJson($url, $payload, $headers)->assertStatus(419);
+    $this->withSession(['_token' => 'browser-csrf-token'])
+        ->postJson($url, $payload, [...$headers, 'X-CSRF-TOKEN' => 'browser-csrf-token'])->assertCreated();
+});
+
+test('lookup and submission throttle budgets are isolated by operation and subject', function () {
+    $event = publicVotingEvent();
+    $subject = publicVotingSubject($event);
+    $other = publicVotingSubject($event, 'other-limit');
+    $registration = publicVotingRegistration($event, 'REG-LOOKUPS');
+
+    for ($i = 0; $i < 60; $i++) {
+        $this->getJson("/api/voting/{$subject->slug}")->assertOk();
+    }
+    $this->getJson("/api/voting/{$subject->slug}")->assertTooManyRequests();
+    $this->getJson("/api/voting/{$other->slug}")->assertOk();
+    foreach ([$subject, $other] as $ballot) {
+        $this->postJson("/api/voting/{$ballot->slug}/votes", [
+            'registration_code' => $registration->registration_code,
+            'contestant_id' => $ballot->contestants()->first()->id,
+        ])->assertCreated();
+    }
+});
+
+test('a venue IP can submit votes for many different registrations without sharing their budget', function () {
+    $event = publicVotingEvent();
+    $subject = publicVotingSubject($event);
+    $contestant = $subject->contestants()->first();
+    for ($i = 0; $i < 25; $i++) {
+        $registration = publicVotingRegistration($event, "REG-VENUE-{$i}");
+        $this->postJson("/api/voting/{$subject->slug}/votes", [
+            'registration_code' => $registration->registration_code,
+            'contestant_id' => $contestant->id,
+        ])->assertCreated();
+    }
+    $this->assertDatabaseCount('voting_votes', 25);
+});
+
+test('submission limits normalize registration codes and isolate other registrations and subjects', function () {
+    $event = publicVotingEvent();
+    $subject = publicVotingSubject($event);
+    $other = publicVotingSubject($event, 'other-submission-limit');
+    $registration = publicVotingRegistration($event, 'REG-LIMIT');
+    $another = publicVotingRegistration($event, 'REG-ANOTHER');
+    $url = "/api/voting/{$subject->slug}/votes";
+    for ($i = 0; $i < 10; $i++) {
+        $this->postJson($url, [
+            'registration_code' => $i % 2 ? '  reg-limit  ' : 'REG-LIMIT',
+            'contestant_id' => 99999 + $i,
+        ])->assertUnprocessable();
+    }
+    $this->withServerVariables(['REMOTE_ADDR' => '203.0.113.9'])->postJson($url, [
+        'registration_code' => ' reg-LIMIT ', 'contestant_id' => $subject->contestants()->first()->id,
+    ])->assertTooManyRequests()->assertHeader('Retry-After');
+    $this->withServerVariables(['REMOTE_ADDR' => '127.0.0.1'])->postJson($url, [
+        'registration_code' => $another->registration_code, 'contestant_id' => $subject->contestants()->first()->id,
+    ])->assertCreated();
+    $this->postJson("/api/voting/{$other->slug}/votes", [
+        'registration_code' => $registration->registration_code, 'contestant_id' => $other->contestants()->first()->id,
+    ])->assertCreated();
+});
+
+test('rotating invalid codes is limited without consuming a valid registration budget', function () {
+    $event = publicVotingEvent();
+    $subject = publicVotingSubject($event);
+    $contestant = $subject->contestants()->first();
+    $registration = publicVotingRegistration($event, 'REG-VALID-AFTER-ABUSE');
+    $url = "/api/voting/{$subject->slug}/votes";
+    for ($i = 0; $i < 10; $i++) {
+        $this->postJson($url, ['registration_code' => "UNKNOWN-{$i}", 'contestant_id' => $contestant->id])->assertUnprocessable();
+    }
+    $this->postJson($url, ['registration_code' => 'UNKNOWN-NEW', 'contestant_id' => $contestant->id])->assertTooManyRequests();
+    $this->postJson($url, ['registration_code' => ['invalid'], 'contestant_id' => $contestant->id])->assertTooManyRequests();
+    $this->postJson($url, [
+        'registration_code' => $registration->registration_code, 'contestant_id' => $contestant->id,
+    ])->assertCreated();
 });
