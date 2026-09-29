@@ -1,5 +1,6 @@
 <?php
 
+use App\Mail\EventInvitation;
 use App\Mail\RegistrationConfirmation;
 use App\Models\Attendee;
 use App\Models\EmailInvitation;
@@ -525,7 +526,7 @@ test('an event owner can update an event and publish a new form version', functi
         ->and($event->registrationForms()->where('is_active', true)->count())->toBe(1);
 });
 
-test('an event owner can send a normalized batch of registration invitations', function () {
+test('an event owner can send invitations containing the registration link and qr code', function () {
     $user = User::factory()->create();
     $event = Event::findOrFail(
         $this->actingAs($user)->postJson('/api/events', eventPayload())->json('data.id'),
@@ -553,6 +554,20 @@ test('an event owner can send a normalized batch of registration invitations', f
         'email' => 'second@example.com',
         'status' => 'sent',
     ]);
+
+    $registrationUrl = 'http://localhost:3000/register/'.$event->slug;
+
+    Mail::assertSent(EventInvitation::class, 2);
+    Mail::assertSent(EventInvitation::class, function (EventInvitation $mail) use ($event, $registrationUrl): bool {
+        $mail->assertHasSubject('Invitation: '.$event->title);
+        $mail->assertSeeInHtml($registrationUrl);
+        $mail->assertHasAttachedData($mail->qrPng, 'event-registration-qr.png', ['mime' => 'image/png']);
+
+        expect($mail->registrationUrl)->toBe($registrationUrl)
+            ->and(substr($mail->qrPng, 0, 8))->toBe("\x89PNG\r\n\x1a\n");
+
+        return true;
+    });
 });
 
 test('an event owner can retrieve only the twenty most recent invitation logs', function () {
@@ -664,7 +679,10 @@ test('a failed invitation delivery is recorded without its failure reason', func
     $event = Event::findOrFail(
         $this->actingAs($user)->postJson('/api/events', eventPayload())->json('data.id'),
     );
-    Mail::shouldReceive('raw')->once()->andThrow(new RuntimeException('SMTP credentials exposed here'));
+    Mail::shouldReceive('to')
+        ->once()
+        ->with('guest@example.com')
+        ->andThrow(new RuntimeException('SMTP credentials exposed here'));
 
     $response = $this->actingAs($user)
         ->postJson('/api/events/'.$event->slug.'/invitations', [

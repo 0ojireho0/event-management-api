@@ -3,10 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\StoreEventRequest;
+use App\Mail\EventInvitation;
 use App\Models\EmailInvitation;
 use App\Models\Event;
 use App\Models\Registration;
 use App\Models\RegistrationForm;
+use Endroid\QrCode\Builder\Builder;
+use Endroid\QrCode\Encoding\Encoding;
+use Endroid\QrCode\ErrorCorrectionLevel;
+use Endroid\QrCode\RoundBlockSizeMode;
+use Endroid\QrCode\Writer\PngWriter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -189,6 +195,16 @@ class EventController extends Controller
         ]);
         $registrationUrl = rtrim((string) config('app.frontend_url'), '/').'/register/'.$event->slug;
         $invitations = collect();
+        $qrPng = Builder::create()
+            ->writer(new PngWriter)
+            ->data($registrationUrl)
+            ->encoding(new Encoding('UTF-8'))
+            ->errorCorrectionLevel(ErrorCorrectionLevel::Medium)
+            ->size(300)
+            ->margin(12)
+            ->roundBlockSizeMode(RoundBlockSizeMode::Margin)
+            ->build()
+            ->getString();
 
         foreach ($validated['emails'] as $email) {
             $invitation = $event->emailInvitations()->create([
@@ -197,12 +213,7 @@ class EventController extends Controller
             ]);
 
             try {
-                Mail::raw(
-                    "You are invited to register for {$event->title}.\n\nRegistration link: {$registrationUrl}",
-                    fn ($message) => $message
-                        ->to($email)
-                        ->subject('Invitation: '.$event->title),
-                );
+                Mail::to($email)->send(new EventInvitation($event, $registrationUrl, $qrPng));
 
                 $invitation->update(['status' => 'sent']);
             } catch (\Throwable) {
