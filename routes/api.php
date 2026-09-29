@@ -6,6 +6,7 @@ use App\Http\Controllers\PasswordController;
 use App\Http\Controllers\PublicRegistrationController;
 use App\Http\Controllers\RaffleController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\VotingSubjectController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -34,6 +35,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::apiResource('users', UserController::class)->except(['show']);
         Route::get('/events', [EventController::class, 'index']);
         Route::post('/events', [EventController::class, 'store']);
+        Route::get('/events/{event:slug}/voting-subjects', [VotingSubjectController::class, 'index']);
+        Route::post('/events/{event:slug}/voting-subjects', [VotingSubjectController::class, 'store']);
+        Route::get('/events/{event:slug}/voting-subjects/{subject}', [VotingSubjectController::class, 'show']);
+        Route::patch('/events/{event:slug}/voting-subjects/{subject}', [VotingSubjectController::class, 'update']);
+        Route::delete('/events/{event:slug}/voting-subjects/{subject}', [VotingSubjectController::class, 'destroy']);
+        Route::post('/events/{event:slug}/voting-subjects/{subject}/activate', [VotingSubjectController::class, 'activate']);
+        Route::post('/events/{event:slug}/voting-subjects/{subject}/close', [VotingSubjectController::class, 'close']);
         Route::get('/events/{event:slug}', [EventController::class, 'show']);
         Route::get('/events/{event:slug}/raffle', [RaffleController::class, 'show']);
         Route::put('/events/{event:slug}/raffle/settings', [RaffleController::class, 'updateSettings']);
