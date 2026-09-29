@@ -3,6 +3,7 @@
 use App\Models\Attendee;
 use App\Models\Event;
 use App\Models\User;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 
 test('an event persists ordered contestants and one vote per registration per subject', function () {
@@ -75,3 +76,64 @@ test('an event persists ordered contestants and one vote per registration per su
     $this->assertDatabaseMissing('voting_votes', ['id' => $firstVote->id]);
     $this->assertDatabaseHas('voting_votes', ['id' => $secondVote->id]);
 });
+
+test('a vote rejects a contestant from another subject', function () {
+    [$event, $registration] = votingEventWithRegistration('contestant');
+    $subject = $event->votingSubjects()->create([
+        'slug' => hash('sha256', 'first-subject'),
+        'title' => 'First Subject',
+    ]);
+    $otherSubject = $event->votingSubjects()->create([
+        'slug' => hash('sha256', 'second-subject'),
+        'title' => 'Second Subject',
+    ]);
+    $otherContestant = $otherSubject->contestants()->create(['name' => 'Other Contestant']);
+
+    expect(fn () => $subject->votes()->create([
+        'voting_contestant_id' => $otherContestant->id,
+        'registration_id' => $registration->id,
+    ]))->toThrow(QueryException::class);
+});
+
+test('a vote rejects a registration from another event', function () {
+    [$event] = votingEventWithRegistration('first-event');
+    [, $otherRegistration] = votingEventWithRegistration('second-event');
+    $subject = $event->votingSubjects()->create([
+        'slug' => hash('sha256', 'cross-event-subject'),
+        'title' => 'Event Subject',
+    ]);
+    $contestant = $subject->contestants()->create(['name' => 'First Contestant']);
+
+    expect(fn () => $subject->votes()->create([
+        'voting_contestant_id' => $contestant->id,
+        'registration_id' => $otherRegistration->id,
+    ]))->toThrow(QueryException::class);
+});
+
+function votingEventWithRegistration(string $suffix): array
+{
+    $owner = User::factory()->create();
+    $event = Event::create([
+        'created_by' => $owner->id,
+        'title' => 'Event '.$suffix,
+        'slug' => 'event-'.$suffix,
+        'starts_at' => now()->addDay(),
+        'ends_at' => now()->addDays(2),
+    ]);
+    $form = $event->registrationForms()->create(['title' => 'Registration']);
+    $email = $suffix.'@example.com';
+    $attendee = Attendee::create([
+        'first_name' => 'Jamie',
+        'last_name' => 'Rivera',
+        'email' => $email,
+        'email_normalized' => $email,
+    ]);
+    $registration = $event->registrations()->create([
+        'registration_form_id' => $form->id,
+        'attendee_id' => $attendee->id,
+        'registration_code' => 'REG-'.$suffix,
+        'registered_at' => now(),
+    ]);
+
+    return [$event, $registration];
+}

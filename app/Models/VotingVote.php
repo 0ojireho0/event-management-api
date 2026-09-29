@@ -7,7 +7,16 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class VotingVote extends Model
 {
-    protected $fillable = ['voting_subject_id', 'voting_contestant_id', 'registration_id'];
+    protected $fillable = ['event_id', 'voting_subject_id', 'voting_contestant_id', 'registration_id'];
+
+    protected static function booted(): void
+    {
+        static::creating(function (self $vote): void {
+            $vote->event_id = VotingSubject::query()
+                ->whereKey($vote->voting_subject_id)
+                ->value('event_id');
+        });
+    }
 
     public function subject(): BelongsTo
     {
