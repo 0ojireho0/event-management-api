@@ -4,6 +4,7 @@ use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\EventController;
 use App\Http\Controllers\PasswordController;
 use App\Http\Controllers\PublicRegistrationController;
+use App\Http\Controllers\PublicVotingController;
 use App\Http\Controllers\RaffleController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\VotingSubjectController;
@@ -17,6 +18,13 @@ Route::prefix('registration/events')->group(function () {
     Route::get('/{event:slug}', [PublicRegistrationController::class, 'show']);
     Route::post('/{event:slug}', [PublicRegistrationController::class, 'store']);
 });
+
+Route::get('/voting/{subject:slug}', [PublicVotingController::class, 'show'])
+    ->middleware('throttle:60,1')
+    ->missing(fn () => response()->json(['message' => 'Not Found'], 404));
+Route::post('/voting/{subject:slug}/votes', [PublicVotingController::class, 'store'])
+    ->middleware('throttle:10,1')
+    ->missing(fn () => response()->json(['message' => 'Not Found'], 404));
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', function (Request $request) {
