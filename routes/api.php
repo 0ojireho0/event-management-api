@@ -27,7 +27,7 @@ Route::get('/voting/{subject:slug}', [PublicVotingController::class, 'show'])
     ->missing(fn () => response()->json(['message' => 'Not Found'], 404));
 Route::post('/voting/{subject:slug}/votes', [PublicVotingController::class, 'store'])
     ->withoutMiddleware(EnsureFrontendRequestsAreStateful::class)
-    ->middleware('throttle:public-voting-submission')
+    ->middleware(['throttle:public-voting-submission', 'throttle:public-voting-registration'])
     ->missing(fn () => response()->json(['message' => 'Not Found'], 404));
 
 Route::middleware('auth:sanctum')->group(function () {

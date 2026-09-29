@@ -37,23 +37,31 @@ class AppServiceProvider extends ServiceProvider
         });
 
         RateLimiter::for('public-voting-submission', function (Request $request): Limit {
+            // Apply this shared venue budget before any eligibility lookup.
+            return Limit::perMinute(120)->by($this->votingThrottleKey([
+                $this->votingSubjectSlug($request), $request->ip(),
+            ]));
+        });
+
+        RateLimiter::for('public-voting-registration', function (Request $request): Limit {
             $slug = $this->votingSubjectSlug($request);
             $code = $request->input('registration_code');
+            $normalizedCode = is_string($code) ? Str::upper(trim($code)) : null;
             $registration = is_string($code) && mb_strlen($code) <= 255
                 ? DB::table('registrations')
                     ->join('voting_subjects', 'voting_subjects.event_id', '=', 'registrations.event_id')
                     ->where('voting_subjects.slug', $slug)
                     ->where('voting_subjects.status', VotingSubject::STATUS_ACTIVE)
                     ->where('registrations.status', 'confirmed')
-                    ->where('registrations.registration_code', Str::upper(trim($code)))
+                    ->where('registrations.registration_code', $normalizedCode)
                     ->first(['registrations.id', 'voting_subjects.id as subject_id'])
                 : null;
 
-            // A venue's shared IP must not pool eligible voters' attempts. Code
-            // guesses still share a bounded bucket, separate from valid votes.
+            // Each normalized candidate gets the same fine limit, including
+            // unknown codes, so a lower invalid-only threshold cannot leak eligibility.
             $identity = $registration
                 ? ['registration', $registration->subject_id, $registration->id]
-                : ['invalid', $slug, $request->ip()];
+                : ['code', $slug, $normalizedCode];
 
             return Limit::perMinute(10)->by($this->votingThrottleKey($identity));
         });

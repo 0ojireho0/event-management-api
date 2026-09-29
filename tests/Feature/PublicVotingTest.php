@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Models\VotingSubject;
 use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 
 function publicVotingEvent(string $suffix = 'main'): Event
@@ -303,18 +304,74 @@ test('submission limits normalize registration codes and isolate other registrat
     ])->assertCreated();
 });
 
-test('rotating invalid codes is limited without consuming a valid registration budget', function () {
+test('invalid code attempts have no lower shared threshold than valid registration attempts', function () {
     $event = publicVotingEvent();
     $subject = publicVotingSubject($event);
-    $contestant = $subject->contestants()->first();
-    $registration = publicVotingRegistration($event, 'REG-VALID-AFTER-ABUSE');
+    $registration = publicVotingRegistration($event, 'REG-VALID-AFTER-GUESSES');
     $url = "/api/voting/{$subject->slug}/votes";
-    for ($i = 0; $i < 10; $i++) {
-        $this->postJson($url, ['registration_code' => "UNKNOWN-{$i}", 'contestant_id' => $contestant->id])->assertUnprocessable();
+    for ($i = 0; $i < 25; $i++) {
+        $this->postJson($url, ['registration_code' => "UNKNOWN-{$i}", 'contestant_id' => 99999])
+            ->assertUnprocessable()->assertExactJson(['message' => 'Invalid contestant.']);
     }
-    $this->postJson($url, ['registration_code' => 'UNKNOWN-NEW', 'contestant_id' => $contestant->id])->assertTooManyRequests();
-    $this->postJson($url, ['registration_code' => ['invalid'], 'contestant_id' => $contestant->id])->assertTooManyRequests();
-    $this->postJson($url, [
-        'registration_code' => $registration->registration_code, 'contestant_id' => $contestant->id,
+    foreach ([$registration->registration_code, 'UNKNOWN-NEW'] as $code) {
+        $this->postJson($url, ['registration_code' => $code, 'contestant_id' => 99999])
+            ->assertUnprocessable()->assertExactJson(['message' => 'Invalid contestant.']);
+    }
+});
+
+test('exhausted venue submission budget rejects every code before registration lookup', function () {
+    config(['app.debug' => false]);
+    $this->freezeTime();
+    $event = publicVotingEvent();
+    $subject = publicVotingSubject($event);
+    $other = publicVotingSubject($event, 'other-venue-budget');
+    $registration = publicVotingRegistration($event, 'REG-VALID-AFTER-BUDGET');
+    $url = "/api/voting/{$subject->slug}/votes";
+    $statuses = [];
+    for ($i = 0; $i < 120; $i++) {
+        $statuses[] = $this->postJson($url, ['registration_code' => "UNKNOWN-{$i}", 'contestant_id' => 99999])->status();
+    }
+
+    DB::enableQueryLog();
+    DB::flushQueryLog();
+    try {
+        $responses = [];
+        foreach ([$registration->registration_code, 'UNKNOWN-NEW', ['invalid']] as $code) {
+            $responses[] = $this->postJson($url, ['registration_code' => $code, 'contestant_id' => 99999])
+                ->assertTooManyRequests()->assertExactJson(['message' => 'Too Many Attempts.']);
+        }
+        $registrationQueries = array_filter(DB::getQueryLog(), fn (array $query): bool => str_contains($query['query'], 'registrations'));
+    } finally {
+        DB::disableQueryLog();
+    }
+
+    expect(array_unique($statuses))->toBe([422])
+        ->and($registrationQueries)->toBe([]);
+    foreach (['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'Retry-After'] as $header) {
+        expect($responses[0]->headers->get($header))->not->toBeNull()
+            ->toBe($responses[1]->headers->get($header))->toBe($responses[2]->headers->get($header));
+    }
+
+    $this->getJson("/api/voting/{$subject->slug}")->assertOk();
+    $this->postJson("/api/voting/{$other->slug}/votes", [
+        'registration_code' => $registration->registration_code, 'contestant_id' => $other->contestants()->first()->id,
     ])->assertCreated();
+});
+
+test('repeated normalized candidate codes have the same fine limit regardless of eligibility', function () {
+    config(['app.debug' => false]);
+    $event = publicVotingEvent();
+    $subject = publicVotingSubject($event);
+    $registration = publicVotingRegistration($event, 'REG-FINE-LIMIT');
+    $url = "/api/voting/{$subject->slug}/votes";
+    foreach ([$registration->registration_code, 'UNKNOWN-FINE-LIMIT'] as $code) {
+        for ($i = 0; $i < 10; $i++) {
+            $this->postJson($url, [
+                'registration_code' => $i % 2 ? '  '.strtolower($code).'  ' : $code,
+                'contestant_id' => 99999,
+            ])->assertUnprocessable()->assertExactJson(['message' => 'Invalid contestant.']);
+        }
+        $this->postJson($url, ['registration_code' => $code, 'contestant_id' => 99999])
+            ->assertTooManyRequests()->assertExactJson(['message' => 'Too Many Attempts.']);
+    }
 });
