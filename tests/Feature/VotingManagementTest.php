@@ -261,6 +261,34 @@ test('draft update replaces contestants in the submitted order and validates the
     expect($subject->contestants()->orderBy('display_order')->pluck('name')->all())->toBe(['Second', 'First', 'Third']);
 });
 
+test('creation rejects keyed contestant input instead of storing client keys as positions', function () {
+    $owner = User::factory()->create();
+    $event = votingManagementEvent($owner);
+
+    $this->actingAs($owner)->postJson("/api/events/{$event->slug}/voting-subjects", [
+        'title' => 'Award',
+        'contestants' => [10 => ['name' => 'First'], 2 => ['name' => 'Second']],
+    ])->assertUnprocessable()->assertJsonValidationErrors('contestants');
+    $this->assertDatabaseCount('voting_subjects', 0);
+});
+
+test('draft update rejects keyed contestant input without changing stored order', function () {
+    $owner = User::factory()->create();
+    $event = votingManagementEvent($owner);
+    $subject = $event->votingSubjects()->create(['slug' => hash('sha256', 'keyed-update'), 'title' => 'Award']);
+    $subject->contestants()->createMany([
+        ['name' => 'First', 'display_order' => 0],
+        ['name' => 'Second', 'display_order' => 1],
+    ]);
+
+    $this->actingAs($owner)->patchJson("/api/events/{$event->slug}/voting-subjects/{$subject->slug}", [
+        'title' => 'Changed',
+        'contestants' => [10 => ['name' => 'Second'], 2 => ['name' => 'First']],
+    ])->assertUnprocessable()->assertJsonValidationErrors('contestants');
+    $this->assertDatabaseHas('voting_subjects', ['id' => $subject->id, 'title' => 'Award']);
+    expect($subject->contestants()->orderBy('display_order')->pluck('name')->all())->toBe(['First', 'Second']);
+});
+
 test('activation requires two contestants and lifecycle transitions never reopen a subject', function () {
     $owner = User::factory()->create();
     $event = votingManagementEvent($owner);

@@ -134,8 +134,10 @@ class VotingSubjectController extends Controller
 
     private function replaceContestants(VotingSubject $subject, array $contestants): void
     {
-        foreach ($contestants as $order => $contestant) {
-            $subject->contestants()->create(['name' => $contestant['name'], 'display_order' => $order]);
+        $order = 0;
+
+        foreach ($contestants as $contestant) {
+            $subject->contestants()->create(['name' => $contestant['name'], 'display_order' => $order++]);
         }
     }
 

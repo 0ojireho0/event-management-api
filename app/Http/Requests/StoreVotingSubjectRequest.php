@@ -45,7 +45,7 @@ class StoreVotingSubjectRequest extends FormRequest
     {
         return [
             'title' => ['required', 'string', 'max:255'],
-            'contestants' => ['required', 'array', 'min:2', 'max:250'],
+            'contestants' => ['required', 'array', 'list', 'min:2', 'max:250'],
             'contestants.*' => ['required', 'array'],
             'contestants.*.name' => ['required', 'string', 'max:255'],
         ];
