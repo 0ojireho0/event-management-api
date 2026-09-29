@@ -7,6 +7,7 @@ use App\Http\Controllers\PublicRegistrationController;
 use App\Http\Controllers\PublicVotingController;
 use App\Http\Controllers\RaffleController;
 use App\Http\Controllers\UserController;
+use App\Http\Controllers\VotingResultController;
 use App\Http\Controllers\VotingSubjectController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -46,6 +47,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/events/{event:slug}/voting-subjects', [VotingSubjectController::class, 'index']);
         Route::post('/events/{event:slug}/voting-subjects', [VotingSubjectController::class, 'store']);
         Route::get('/events/{event:slug}/voting-subjects/{subject}', [VotingSubjectController::class, 'show']);
+        Route::get('/events/{event:slug}/voting-subjects/{subject:slug}/results', [VotingResultController::class, 'show']);
         Route::patch('/events/{event:slug}/voting-subjects/{subject}', [VotingSubjectController::class, 'update']);
         Route::delete('/events/{event:slug}/voting-subjects/{subject}', [VotingSubjectController::class, 'destroy']);
         Route::post('/events/{event:slug}/voting-subjects/{subject}/activate', [VotingSubjectController::class, 'activate']);
