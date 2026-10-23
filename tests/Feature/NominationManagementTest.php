@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Models\VotingContestant;
 use App\Models\VotingSubject;
 use App\Services\NominationService;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 function nominationManagementEvent(?User $owner = null): Event
@@ -96,6 +97,86 @@ test('owner creates an ordered attendee linked draft nomination from registratio
     $this->getJson('/api/voting/'.$created->json('data.slug'))->assertNotFound();
     $this->assertDatabaseCount('voting_subjects', 1);
     $this->assertDatabaseCount('voting_contestants', 2);
+});
+
+test('complete attendee names exceeding 255 characters persist through nomination creation and finalist generation', function () {
+    $event = nominationManagementEvent();
+    $firstName = str_repeat('陳', 255);
+    $lastName = str_repeat('林', 255);
+    $completeName = $firstName.' '.$lastName;
+    $registration = nominationManagementRegistration($event, $firstName);
+    $registration->attendee->update(['last_name' => $lastName]);
+    $second = nominationManagementRegistration($event, 'Bea');
+    $base = "/api/events/{$event->slug}/nominations";
+
+    $created = $this->actingAs(User::find($event->created_by))->postJson($base, [
+        'title' => 'Long Name Award', 'top_n' => 2,
+        'attendee_ids' => [$registration->attendee_id, $second->attendee_id],
+    ])->assertCreated()->assertJsonPath('data.contestants.0.name', $completeName);
+    $subject = VotingSubject::where('slug', $created->json('data.slug'))->firstOrFail();
+    expect(mb_strlen($subject->contestants()->first()->name))->toBe(511);
+    $this->postJson("{$base}/{$subject->slug}/open")->assertOk();
+    $this->postJson("/api/voting/{$subject->slug}/votes", [
+        'registration_code' => $registration->registration_code,
+        'contestant_id' => $subject->contestants()->first()->id,
+    ])->assertCreated();
+    $this->postJson("{$base}/{$subject->slug}/close")->assertOk()
+        ->assertJsonPath('data.generated_subject.contestants.0.name', $completeName);
+    expect($subject->fresh()->generatedSubject->contestants()->first()->name)->toBe($completeName);
+
+    // SQLite accepts oversized VARCHAR values; also verify the deployed storage contract.
+    expect(Schema::getColumnType('voting_contestants', 'name'))->toBe('text');
+
+    $migration = require database_path('migrations/2026_10_23_010000_expand_voting_contestant_names.php');
+    expect(fn () => $migration->down())->toThrow(RuntimeException::class, 'Cannot narrow contestant names while names exceed 255 characters.');
+    expect($subject->fresh()->generatedSubject->contestants()->first()->name)->toBe($completeName)
+        ->and(Schema::getColumnType('voting_contestants', 'name'))->toBe('text');
+});
+
+test('nomination creation rejects top N beyond unsigned integer storage', function () {
+    $event = nominationManagementEvent();
+    $first = nominationManagementRegistration($event, 'Ava');
+    $second = nominationManagementRegistration($event, 'Bea');
+    $this->actingAs(User::find($event->created_by))->postJson("/api/events/{$event->slug}/nominations", [
+        'title' => 'Overflow', 'top_n' => 4294967296,
+        'attendee_ids' => [$first->attendee_id, $second->attendee_id],
+    ])->assertUnprocessable()->assertJsonValidationErrors('top_n');
+    $this->assertDatabaseCount('voting_subjects', 0);
+});
+
+test('draft edits reject top N beyond unsigned integer storage without changing the nomination', function () {
+    $event = nominationManagementEvent();
+    $subject = nominationManagementSubject($event);
+    $this->actingAs(User::find($event->created_by))
+        ->patchJson("/api/events/{$event->slug}/nominations/{$subject->slug}", [
+            'title' => 'Overflow', 'top_n' => 4294967296,
+            'attendee_ids' => $subject->contestants()->pluck('attendee_id')->all(),
+        ])->assertUnprocessable()->assertJsonValidationErrors('top_n');
+    expect($subject->fresh()->top_n)->toBe(2)->and($subject->fresh()->title)->toBe('Best Teammate')
+        ->and($subject->contestants()->count())->toBe(4);
+});
+
+test('maximum stored top N remains valid and advances every nominee when it exceeds the nominee count', function () {
+    $event = nominationManagementEvent();
+    $first = nominationManagementRegistration($event, 'Ava');
+    $second = nominationManagementRegistration($event, 'Bea');
+    $base = "/api/events/{$event->slug}/nominations";
+    $created = $this->actingAs(User::find($event->created_by))->postJson($base, [
+        'title' => 'Maximum N', 'top_n' => 4294967295,
+        'attendee_ids' => [$first->attendee_id, $second->attendee_id],
+    ])->assertCreated()->assertJsonPath('data.top_n', 4294967295);
+    $subject = VotingSubject::where('slug', $created->json('data.slug'))->firstOrFail();
+    $this->patchJson("{$base}/{$subject->slug}", [
+        'title' => 'Maximum N', 'top_n' => 4294967295,
+        'attendee_ids' => [$first->attendee_id, $second->attendee_id],
+    ])->assertOk()->assertJsonPath('data.top_n', 4294967295);
+    $this->postJson("{$base}/{$subject->slug}/open")->assertOk();
+    $this->postJson("/api/voting/{$subject->slug}/votes", [
+        'registration_code' => $first->registration_code,
+        'contestant_id' => $subject->contestants()->first()->id,
+    ])->assertCreated();
+    $this->postJson("{$base}/{$subject->slug}/close")->assertOk()
+        ->assertJsonCount(2, 'data.generated_subject.contestants');
 });
 
 test('nomination creation validates title top N distinct list size and event attendee membership', function () {

@@ -27,7 +27,7 @@ class StoreNominationRequest extends FormRequest
     {
         return [
             'title' => ['required', 'string', 'max:255'],
-            'top_n' => ['required', 'integer', 'min:2'],
+            'top_n' => ['required', 'integer', 'min:2', 'max:4294967295'],
             'attendee_ids' => ['required', 'array', 'list', 'min:2', 'max:250'],
             'attendee_ids.*' => [
                 'bail', 'required', 'integer', 'distinct',
