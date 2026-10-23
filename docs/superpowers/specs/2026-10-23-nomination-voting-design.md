@@ -11,7 +11,7 @@ Add a second voting creation workflow that lets event admins run a nomination ro
 - Nominees are selected from attendees registered for the current event, regardless of registration status. Duplicate attendee records are shown once. Search results display only the attendee's full name; the admin must select a result to add it. Fuzzy matches are selectable name-only suggestions, without a "You mean" prefix.
 - Public nomination votes follow existing voting eligibility: a confirmed registration code is required, and each confirmed registration can vote once per subject.
 - Admins manually open and close nomination rounds.
-- Live nomination statistics are admin-only and refresh approximately every three seconds while the round is open. They include total votes and each nominee's count, rank, and share of votes. Results stop refreshing when the round is closed. Public voters do not see live totals.
+- Live nomination statistics are admin-only and update through Laravel event broadcasting whenever a valid nomination vote is recorded while the round is open. They include total votes and each nominee's count, rank, and share of votes. Results stop updating when the round is closed. Public voters do not see live totals.
 - On close, the system calculates the ranking and creates a regular voting subject **as a draft**, using the same title. Every nominee tied at the Nth-place cutoff is included, so the generated subject may contain more than N nominees.
 - The generated draft is linked to its source nomination and is created only once. An admin can review/edit it and explicitly activate it using the existing voting-subject workflow.
 
@@ -23,7 +23,7 @@ Store the requested finalist count and a unique link from the nomination round t
 
 Attendee search is an authenticated, event-scoped API operation. It joins registrations to attendees, considers every registration status, deduplicates attendee IDs, applies exact/partial/fuzzy name matching server-side, and returns only IDs and full names. It must not expose email, registration code, or other attendee details. Search must not return attendees from other events.
 
-The existing admin results endpoint and leaderboard polling behavior should be reused for nomination live statistics. The API must continue to hide result counts from unauthenticated public voting responses. Poll only while an admin is viewing an open nomination round; use the existing approximately three-second interval.
+The existing admin results endpoint remains the source for the initial statistics snapshot and for resynchronizing after a WebSocket reconnect. Use Laravel Broadcasting with an event-scoped private channel authorized only for the event-owning admin. After a valid nomination vote is committed, broadcast the updated aggregate statistics (total votes and each nominee's count, rank, and share). Broadcast after the database transaction commits so clients never receive counts for an uncommitted vote. Keep the public voting response free of result counts. The frontend subscribes only while an admin is viewing an open nomination round, unsubscribes when it closes or the page is left, and reloads the snapshot after reconnecting. Configure a running queue worker for queued broadcasts; broadcast delivery failure must not undo or fail an already-saved vote.
 
 ## User flows
 
@@ -33,7 +33,7 @@ The existing admin results endpoint and leaderboard polling behavior should be r
 2. Admin enters the title and top-N count, searches this event's registered attendees, and selects nominee name results.
 3. Admin saves the nomination as a draft and can manually open it.
 4. Confirmed attendees vote through the current public voting page using their registration code; each registration may vote once per nomination subject.
-5. Admin sees private live statistics while the nomination is open and manually closes the round.
+5. Admin sees private live statistics update through broadcasting while the nomination is open and manually closes the round.
 6. Closing ranks votes, includes all nominees tied at the Nth-place cutoff, and creates one same-title regular voting-subject draft.
 7. Admin reviews or edits the generated draft and activates it when ready. Attendees may then vote in this separate subject under the existing one-vote-per-subject rule.
 
@@ -57,6 +57,7 @@ The existing admin results endpoint and leaderboard polling behavior should be r
 ## Security and privacy
 
 - Only the owning admin may create, search, view results for, open, or close an event's nomination round, following the existing event-owner checks.
+- Only the owning admin may subscribe to the event-scoped private statistics channel. Broadcast payloads contain aggregate vote statistics only and must never be sent on a public channel.
 - Nominee search results reveal only attendee ID internally for selection and full name for display; no email or registration code is returned.
 - Public vote lookup continues exposing only the active subject title and ordered nominee identifiers/names; live tally data stays admin-only.
 - Voters must have a confirmed registration for the same event. Existing database uniqueness and subject locks continue preventing duplicate votes and race-condition votes after closure.
@@ -75,7 +76,9 @@ The existing admin results endpoint and leaderboard polling behavior should be r
 - Preserve existing manual subject creation, edit, activate, close, and public voting tests.
 - Verify attendee search event scoping, all-status inclusion, attendee deduplication, fuzzy matching, name-only response data, and owner-only access.
 - Verify nomination creation and manual open/close transitions, one vote per confirmed registration, and rejection of unconfirmed/other-event voter codes.
-- Verify live stats include counts/rank/share and are unavailable from public APIs.
+- Verify live stats include counts/rank/share, are broadcast only after a committed vote, and are unavailable from public APIs.
+- Verify private-channel authorization denies non-owner and unauthenticated subscribers, the frontend receives updates for an open round, unsubscribes when it closes, and reloads the authoritative snapshot after reconnecting.
+- Verify a broadcast/queue failure does not fail or roll back an otherwise successful nomination vote.
 - Verify top-N ordering, cutoff ties, N greater than the nominee count, zero-vote close behavior, and exactly-one generated same-title draft.
 - Verify close plus generated-draft creation is transactional under a failed creation and safe against concurrent/retried close requests.
 - Verify generated drafts can be reviewed/edited and activated through the existing workflow.
@@ -85,4 +88,4 @@ The existing admin results endpoint and leaderboard polling behavior should be r
 - N is at least two because the follow-on public ballot requires at least two contestants.
 - A confirmed registration may vote in both the nomination round and the generated regular voting subject, since one vote is enforced per subject.
 - Fuzzy matching is a server-side name-search feature, not AI-generated matching and not an automatic merge; an admin explicitly selects the result.
-- The approximate three-second leaderboard refresh is sufficient for real-time nomination statistics; no WebSocket infrastructure is introduced.
+- Laravel Broadcasting is used for near-real-time admin statistics instead of a fixed three-second polling interval. Laravel Reverb is the intended WebSocket broadcaster; use a managed Laravel Cloud Reverb cluster in hosted environments when available. The admin results endpoint remains the authoritative snapshot for initial load and reconnect recovery.
