@@ -4,6 +4,7 @@ use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\EventController;
 use App\Http\Controllers\NominationController;
 use App\Http\Controllers\PasswordController;
+use App\Http\Controllers\PublicNominationController;
 use App\Http\Controllers\PublicRegistrationController;
 use App\Http\Controllers\PublicVotingController;
 use App\Http\Controllers\RaffleController;
@@ -32,6 +33,19 @@ Route::get('/voting/{subject:slug}', [PublicVotingController::class, 'show'])
 Route::post('/voting/{subject:slug}/votes', [PublicVotingController::class, 'store'])
     ->withoutMiddleware(EnsureFrontendRequestsAreStateful::class)
     ->middleware(['throttle:public-voting-submission', 'throttle:public-voting-registration'])
+    ->missing(fn () => response()->json(['message' => 'Not Found'], 404));
+
+Route::get('/nominations/{subject:slug}', [PublicNominationController::class, 'show'])
+    ->withoutMiddleware(EnsureFrontendRequestsAreStateful::class)
+    ->middleware('throttle:public-nomination-lookup')
+    ->missing(fn () => response()->json(['message' => 'Not Found'], 404));
+Route::get('/nominations/{subject:slug}/candidates', [PublicNominationController::class, 'candidates'])
+    ->withoutMiddleware(EnsureFrontendRequestsAreStateful::class)
+    ->middleware('throttle:public-nomination-lookup')
+    ->missing(fn () => response()->json(['message' => 'Not Found'], 404));
+Route::post('/nominations/{subject:slug}/submit', [PublicNominationController::class, 'submit'])
+    ->withoutMiddleware(EnsureFrontendRequestsAreStateful::class)
+    ->middleware(['throttle:public-nomination-submission', 'throttle:public-nomination-registration'])
     ->missing(fn () => response()->json(['message' => 'Not Found'], 404));
 
 Route::middleware('auth:sanctum')->group(function () {

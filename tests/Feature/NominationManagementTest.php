@@ -74,29 +74,24 @@ function nominationManagementVotes(VotingSubject $subject, array $counts): void
     }
 }
 
-test('owner creates an ordered attendee linked draft nomination from registrations of any status', function () {
+test('owner creates a draft nomination from title and top N only with no preselected contestants', function () {
     $event = nominationManagementEvent();
-    $first = nominationManagementRegistration($event, '  Ava  ', 'cancelled');
-    $second = nominationManagementRegistration($event, 'Bea', 'pending');
 
     $created = $this->actingAs(User::find($event->created_by))
         ->postJson("/api/events/{$event->slug}/nominations", [
             'title' => '  Best Teammate  ',
             'top_n' => 8,
-            'attendee_ids' => [$second->attendee_id, $first->attendee_id],
         ])->assertCreated()->assertJsonPath('data.title', 'Best Teammate')
         ->assertJsonPath('data.mode', 'nomination')->assertJsonPath('data.top_n', 8)
         ->assertJsonPath('data.status', 'draft')->assertJsonPath('data.generated_subject', null)
         ->assertJsonPath('data.generated_from_subject_id', null)
-        ->assertJsonPath('data.contestants.0.attendee_id', $second->attendee_id)
-        ->assertJsonPath('data.contestants.0.name', 'Bea Lee')
-        ->assertJsonPath('data.contestants.1.name', 'Ava Lee')
-        ->assertJsonPath('data.contestants.1.display_order', 1);
+        ->assertJsonCount(0, 'data.contestants');
 
     expect($created->json('data.slug'))->toMatch('/^[a-f0-9]{64}$/');
+    expect($created->json('data.public_url'))->toMatch('#/nomination/[a-f0-9]{64}$#');
     $this->getJson('/api/voting/'.$created->json('data.slug'))->assertNotFound();
     $this->assertDatabaseCount('voting_subjects', 1);
-    $this->assertDatabaseCount('voting_contestants', 2);
+    $this->assertDatabaseCount('voting_contestants', 0);
 });
 
 test('complete attendee names exceeding 255 characters persist through nomination creation and finalist generation', function () {
@@ -106,20 +101,20 @@ test('complete attendee names exceeding 255 characters persist through nominatio
     $completeName = $firstName.' '.$lastName;
     $registration = nominationManagementRegistration($event, $firstName);
     $registration->attendee->update(['last_name' => $lastName]);
-    $second = nominationManagementRegistration($event, 'Bea');
     $base = "/api/events/{$event->slug}/nominations";
 
     $created = $this->actingAs(User::find($event->created_by))->postJson($base, [
         'title' => 'Long Name Award', 'top_n' => 2,
-        'attendee_ids' => [$registration->attendee_id, $second->attendee_id],
-    ])->assertCreated()->assertJsonPath('data.contestants.0.name', $completeName);
+    ])->assertCreated()->assertJsonCount(0, 'data.contestants');
     $subject = VotingSubject::where('slug', $created->json('data.slug'))->firstOrFail();
-    expect(mb_strlen($subject->contestants()->first()->name))->toBe(511);
     $this->postJson("{$base}/{$subject->slug}/open")->assertOk();
-    $this->postJson("/api/voting/{$subject->slug}/votes", [
-        'registration_code' => $registration->registration_code,
-        'contestant_id' => $subject->contestants()->first()->id,
-    ])->assertCreated();
+    foreach ([$registration, nominationManagementRegistration($event, 'Bea')] as $nominee) {
+        $this->postJson("/api/nominations/{$subject->slug}/submit", [
+            'attendee_id' => $nominee->attendee_id,
+            'registration_code' => $nominee->registration_code,
+        ])->assertCreated();
+    }
+    expect(mb_strlen($subject->contestants()->first()->name))->toBe(511);
     $this->postJson("{$base}/{$subject->slug}/close")->assertOk()
         ->assertJsonPath('data.generated_subject.contestants.0.name', $completeName);
     expect($subject->fresh()->generatedSubject->contestants()->first()->name)->toBe($completeName);
@@ -135,11 +130,8 @@ test('complete attendee names exceeding 255 characters persist through nominatio
 
 test('nomination creation rejects top N beyond unsigned integer storage', function () {
     $event = nominationManagementEvent();
-    $first = nominationManagementRegistration($event, 'Ava');
-    $second = nominationManagementRegistration($event, 'Bea');
     $this->actingAs(User::find($event->created_by))->postJson("/api/events/{$event->slug}/nominations", [
         'title' => 'Overflow', 'top_n' => 4294967296,
-        'attendee_ids' => [$first->attendee_id, $second->attendee_id],
     ])->assertUnprocessable()->assertJsonValidationErrors('top_n');
     $this->assertDatabaseCount('voting_subjects', 0);
 });
@@ -150,7 +142,6 @@ test('draft edits reject top N beyond unsigned integer storage without changing 
     $this->actingAs(User::find($event->created_by))
         ->patchJson("/api/events/{$event->slug}/nominations/{$subject->slug}", [
             'title' => 'Overflow', 'top_n' => 4294967296,
-            'attendee_ids' => $subject->contestants()->pluck('attendee_id')->all(),
         ])->assertUnprocessable()->assertJsonValidationErrors('top_n');
     expect($subject->fresh()->top_n)->toBe(2)->and($subject->fresh()->title)->toBe('Best Teammate')
         ->and($subject->contestants()->count())->toBe(4);
@@ -163,49 +154,34 @@ test('maximum stored top N remains valid and advances every nominee when it exce
     $base = "/api/events/{$event->slug}/nominations";
     $created = $this->actingAs(User::find($event->created_by))->postJson($base, [
         'title' => 'Maximum N', 'top_n' => 4294967295,
-        'attendee_ids' => [$first->attendee_id, $second->attendee_id],
     ])->assertCreated()->assertJsonPath('data.top_n', 4294967295);
     $subject = VotingSubject::where('slug', $created->json('data.slug'))->firstOrFail();
     $this->patchJson("{$base}/{$subject->slug}", [
         'title' => 'Maximum N', 'top_n' => 4294967295,
-        'attendee_ids' => [$first->attendee_id, $second->attendee_id],
     ])->assertOk()->assertJsonPath('data.top_n', 4294967295);
     $this->postJson("{$base}/{$subject->slug}/open")->assertOk();
-    $this->postJson("/api/voting/{$subject->slug}/votes", [
-        'registration_code' => $first->registration_code,
-        'contestant_id' => $subject->contestants()->first()->id,
-    ])->assertCreated();
+    foreach ([$first, $second] as $nominee) {
+        $this->postJson("/api/nominations/{$subject->slug}/submit", [
+            'registration_code' => $nominee->registration_code,
+            'attendee_id' => $nominee->attendee_id,
+        ])->assertCreated();
+    }
     $this->postJson("{$base}/{$subject->slug}/close")->assertOk()
         ->assertJsonCount(2, 'data.generated_subject.contestants');
 });
 
-test('nomination creation validates title top N distinct list size and event attendee membership', function () {
+test('nomination creation validates title and top N only and rejects the obsolete nominee list', function () {
     $event = nominationManagementEvent();
-    $first = nominationManagementRegistration($event, 'Ava');
-    $second = nominationManagementRegistration($event, 'Bea');
-    $other = nominationManagementRegistration(nominationManagementEvent(), 'Other');
-    $unregistered = Attendee::create([
-        'first_name' => 'Unregistered', 'last_name' => 'Lee',
-        'email' => 'unregistered@example.com', 'email_normalized' => 'unregistered@example.com',
-    ]);
-    $valid = ['title' => 'Award', 'top_n' => 2, 'attendee_ids' => [$first->attendee_id, $second->attendee_id]];
+    $valid = ['title' => 'Award', 'top_n' => 2];
     $this->actingAs(User::find($event->created_by));
 
     foreach ([
-        [[], ['title', 'top_n', 'attendee_ids']],
+        [[], ['title', 'top_n']],
         [['title' => '   '], ['title']],
         [['title' => str_repeat('a', 256)], ['title']],
         [['top_n' => 1], ['top_n']],
         [['top_n' => 2.5], ['top_n']],
-        [['attendee_ids' => 'invalid'], ['attendee_ids']],
-        [['attendee_ids' => [$first->attendee_id]], ['attendee_ids']],
-        [['attendee_ids' => array_fill(0, 251, $first->attendee_id)], ['attendee_ids']],
-        [['attendee_ids' => [$first->attendee_id, (string) $first->attendee_id]], ['attendee_ids.1']],
-        [['attendee_ids' => [10 => $first->attendee_id, 20 => $second->attendee_id]], ['attendee_ids']],
-        [['attendee_ids' => [$first->attendee_id, 'invalid']], ['attendee_ids.1']],
-        [['attendee_ids' => [$first->attendee_id, 999999]], ['attendee_ids.1']],
-        [['attendee_ids' => [$first->attendee_id, $other->attendee_id]], ['attendee_ids.1']],
-        [['attendee_ids' => [$first->attendee_id, $unregistered->id]], ['attendee_ids.1']],
+        [['attendee_ids' => [1, 2]], ['attendee_ids']],
     ] as [$overrides, $errors]) {
         $this->postJson("/api/events/{$event->slug}/nominations", $overrides === [] ? [] : array_replace($valid, $overrides))
             ->assertUnprocessable()->assertJsonValidationErrors($errors);
@@ -213,31 +189,29 @@ test('nomination creation validates title top N distinct list size and event att
     $this->assertDatabaseCount('voting_subjects', 0);
 });
 
-test('draft edits validate and replace nominees and top N without retaining old contestants', function () {
+test('draft edits only update title and top N and preserve nominees already submitted', function () {
     $event = nominationManagementEvent();
     $subject = nominationManagementSubject($event);
     $oldIds = $subject->contestants()->pluck('id');
-    $new = nominationManagementRegistration($event, 'New', 'cancelled');
-    $existing = $subject->contestants()->first()->attendee_id;
     $url = "/api/events/{$event->slug}/nominations/{$subject->slug}";
     $this->actingAs(User::find($event->created_by))->patchJson($url, [
-        'title' => ' Revised ', 'top_n' => 3, 'attendee_ids' => [$new->attendee_id, $existing],
+        'title' => ' Revised ', 'top_n' => 3,
     ])->assertOk()->assertJsonPath('data.title', 'Revised')->assertJsonPath('data.top_n', 3)
-        ->assertJsonCount(2, 'data.contestants')->assertJsonPath('data.contestants.0.name', 'New Lee')
-        ->assertJsonPath('data.contestants.1.attendee_id', $existing);
-    expect(VotingContestant::whereIn('id', $oldIds)->count())->toBe(0);
+        ->assertJsonCount(4, 'data.contestants');
 
-    $this->patchJson($url, ['title' => 'Invalid', 'top_n' => 1, 'attendee_ids' => [$existing, $existing]])
-        ->assertUnprocessable()->assertJsonValidationErrors(['top_n', 'attendee_ids.1']);
+    $this->patchJson($url, ['title' => 'Invalid', 'top_n' => 1])
+        ->assertUnprocessable()->assertJsonValidationErrors('top_n');
+    $this->patchJson($url, ['title' => 'Invalid', 'top_n' => 4, 'attendee_ids' => [1, 2]])
+        ->assertUnprocessable()->assertJsonValidationErrors('attendee_ids');
     expect($subject->fresh()->title)->toBe('Revised')->and($subject->fresh()->top_n)->toBe(3);
-    expect($subject->contestants()->orderBy('display_order')->pluck('attendee_id')->all())->toBe([$new->attendee_id, $existing]);
+    expect(VotingContestant::whereIn('id', $oldIds)->count())->toBe(4);
 });
 
 test('nomination management requires authentication and the owning admin', function () {
     $event = nominationManagementEvent();
     $subject = nominationManagementSubject($event);
     $base = "/api/events/{$event->slug}/nominations";
-    $payload = ['title' => 'Changed', 'top_n' => 2, 'attendee_ids' => $subject->contestants()->pluck('attendee_id')->all()];
+    $payload = ['title' => 'Changed', 'top_n' => 2];
 
     foreach ([[null, 401], [User::factory()->scanner()->create(), 403], [User::factory()->create(), 404]] as [$user, $status]) {
         if ($user) {
@@ -272,32 +246,35 @@ test('opening a draft nomination exposes the unchanged public ballot and prevent
     $url = "/api/events/{$event->slug}/nominations/{$subject->slug}";
     $this->actingAs(User::find($event->created_by))->postJson("{$url}/open")
         ->assertOk()->assertJsonPath('data.status', 'active');
-    $this->getJson("/api/voting/{$subject->slug}")->assertOk()->assertExactJson([
-        'title' => 'Best Teammate',
-        'contestants' => $subject->contestants()->orderBy('display_order')->get(['id', 'name'])->toArray(),
+    $this->getJson("/api/voting/{$subject->slug}")->assertNotFound();
+    $this->getJson("/api/nominations/{$subject->slug}")->assertOk()->assertExactJson([
+        'data' => ['title' => 'Best Teammate', 'status' => 'active'],
     ]);
     $this->postJson("{$url}/open")->assertStatus(409);
     $this->patchJson($url, [])->assertStatus(409);
     expect($subject->fresh()->top_n)->toBe(2)->and($subject->contestants()->count())->toBe(4);
 });
 
-test('opening a nomination requires at least two contestants', function () {
+test('opening a nomination does not require preselected contestants', function () {
     $event = nominationManagementEvent();
-    $subject = nominationManagementSubject($event);
-    $subject->contestants()->where('display_order', '>', 0)->delete();
+    $subject = $event->votingSubjects()->create([
+        'slug' => hash('sha256', Str::uuid()), 'title' => 'Best Teammate',
+        'mode' => 'nomination', 'top_n' => 2, 'status' => 'draft',
+    ]);
     $this->actingAs(User::find($event->created_by))
-        ->postJson("/api/events/{$event->slug}/nominations/{$subject->slug}/open")->assertStatus(409);
-    expect($subject->fresh()->status)->toBe('draft');
+        ->postJson("/api/events/{$event->slug}/nominations/{$subject->slug}/open")
+        ->assertOk()->assertJsonPath('data.status', 'active')->assertJsonCount(0, 'data.contestants');
 });
 
-test('nomination voting accepts one confirmed event registration vote without check in', function () {
+test('nomination submission accepts one confirmed event registration code without check in', function () {
     $event = nominationManagementEvent();
     $subject = nominationManagementSubject($event);
     $this->actingAs(User::find($event->created_by))
         ->postJson("/api/events/{$event->slug}/nominations/{$subject->slug}/open")->assertOk();
     $registration = nominationManagementRegistration($event, 'Voter');
-    $payload = ['registration_code' => '  '.strtolower($registration->registration_code).'  ', 'contestant_id' => $subject->contestants()->first()->id];
-    $url = "/api/voting/{$subject->slug}/votes";
+    $candidate = $subject->contestants()->first()->attendee_id;
+    $payload = ['registration_code' => '  '.strtolower($registration->registration_code).'  ', 'attendee_id' => $candidate];
+    $url = "/api/nominations/{$subject->slug}/submit";
     $this->postJson($url, $payload)->assertCreated();
     $this->postJson($url, $payload)->assertStatus(409);
     foreach ([nominationManagementRegistration($event, 'Cancelled', 'cancelled'),
@@ -355,6 +332,28 @@ test('zero votes reject closure without closing or generating a draft', function
         ->postJson("/api/events/{$event->slug}/nominations/{$subject->slug}/close")
         ->assertStatus(409)->assertJsonPath('message', 'A nomination with no votes cannot be closed.');
     expect($subject->fresh()->status)->toBe('active')->and($subject->generatedSubject()->exists())->toBeFalse();
+    $this->assertDatabaseCount('voting_subjects', 1);
+});
+
+test('one unique nominee cannot close into a voting draft that cannot be activated', function () {
+    $event = nominationManagementEvent();
+    $subject = nominationManagementSubject($event, 'active');
+    $subject->contestants()->delete();
+    $candidate = nominationManagementRegistration($event, 'Jamie');
+    $subject->contestants()->create([
+        'name' => 'Jamie Lee',
+        'attendee_id' => $candidate->attendee_id,
+        'display_order' => 0,
+    ]);
+    nominationManagementVotes($subject, [1]);
+
+    $this->actingAs(User::find($event->created_by))
+        ->postJson("/api/events/{$event->slug}/nominations/{$subject->slug}/close")
+        ->assertStatus(409)
+        ->assertJsonPath('message', 'At least two unique nominees are required to create a voting draft.');
+
+    expect($subject->fresh()->status)->toBe('active')
+        ->and($subject->generatedSubject()->exists())->toBeFalse();
     $this->assertDatabaseCount('voting_subjects', 1);
 });
 

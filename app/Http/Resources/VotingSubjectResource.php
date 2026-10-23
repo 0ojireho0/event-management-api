@@ -27,7 +27,9 @@ class VotingSubjectResource extends JsonResource
             'contestant_count' => $this->contestants_count,
             'total_votes' => $this->votes_count,
             'contestants' => $contestants,
-            'public_url' => rtrim((string) config('app.frontend_url'), '/').'/vote/'.$this->slug,
+            'public_url' => rtrim((string) config('app.frontend_url'), '/')
+                .($this->mode === 'nomination' ? '/nomination/' : '/vote/')
+                .$this->slug,
         ];
     }
 }

@@ -8,12 +8,12 @@ use Illuminate\Support\Facades\DB;
 class VotingStatistics
 {
     /**
-     * Return the compact private transport payload for a live nomination update.
+     * Return the compact private transport payload for a live vote or nomination update.
      * Names and presentation metadata stay in the authorized REST response; the
      * positional vote array is ordered by display_order then id and stays small
      * enough for Reverb's default message limit.
      */
-    public function forNominationBroadcast(VotingSubject $subject): array
+    public function forLiveBroadcast(VotingSubject $subject): array
     {
         $subject->loadMissing('event');
         $voteCounts = DB::table('voting_votes')
@@ -38,6 +38,12 @@ class VotingStatistics
             'total_registrations' => $subject->event->registrations()->where('status', 'confirmed')->count(),
             'contestant_votes' => $contestantVotes,
         ];
+    }
+
+    /** @deprecated Use forLiveBroadcast() for both manual voting and nominations. */
+    public function forNominationBroadcast(VotingSubject $subject): array
+    {
+        return $this->forLiveBroadcast($subject);
     }
 
     public function forSubject(VotingSubject $subject): array

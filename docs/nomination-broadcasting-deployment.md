@@ -2,7 +2,7 @@
 
 Nomination leaderboards receive private statistics updates through Laravel Reverb. A successful nomination vote dispatches `NominationStatisticsUpdated` after the database transaction commits. A successful close separately dispatches the compact `NominationClosed` notice after commit. Both broadcasts are rescued so a delivery/queue failure cannot roll back a saved vote or close. Delivery needs both a working Reverb connection and a running queue worker. The application uses the configured queue connection and its default queue; it does not define a separate broadcast queue.
 
-The WebSocket message is a compact aggregate (`event_id`, `subject_id`, status, totals, and a vote-count vector), not the REST response: it omits contestant names and roster fields to remain within Reverb's default 10,000-byte message size at the supported 250-nominee limit. The admin client combines it with the authorized REST roster; malformed or mismatched vectors cause a REST revalidation. The REST response shape remains unchanged.
+The WebSocket message is a compact aggregate (`event_id`, `subject_id`, status, totals, and a vote-count vector), not the REST response: it omits contestant names and roster fields. Tests verify the payload remains below Reverb's default 10,000-byte message size with 2,000 nominees and 2,000 total registrations. The admin client combines it with the authorized REST roster; malformed or mismatched vectors cause a REST revalidation. The REST response shape remains unchanged. There is no fixed nominee-count cap; substantially larger events should be load-tested against the configured Reverb message-size limit.
 
 ## Provision and attach the WebSocket application
 

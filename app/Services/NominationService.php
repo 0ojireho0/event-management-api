@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use App\Events\NominationClosed;
-use App\Models\Attendee;
 use App\Models\Event;
 use App\Models\VotingSubject;
 use Illuminate\Support\Facades\DB;
@@ -21,7 +20,6 @@ class NominationService
                 'status' => VotingSubject::STATUS_DRAFT,
                 'top_n' => $data['top_n'],
             ]);
-            $this->replaceNominees($subject, $data['attendee_ids']);
 
             return $subject;
         });
@@ -34,8 +32,6 @@ class NominationService
             abort_unless($record->status === VotingSubject::STATUS_DRAFT, 409, 'Only draft nominations can be edited.');
 
             $record->update(['title' => $data['title'], 'top_n' => $data['top_n']]);
-            $record->contestants()->delete();
-            $this->replaceNominees($record, $data['attendee_ids']);
 
             return $record;
         });
@@ -46,7 +42,6 @@ class NominationService
         return DB::transaction(function () use ($event, $subject): VotingSubject {
             $record = $this->lockedNomination($event, $subject);
             abort_unless($record->status === VotingSubject::STATUS_DRAFT, 409, 'Only draft nominations can be opened.');
-            abort_if($record->contestants()->count() < 2, 409, 'At least two nominees are required to open nominations.');
             $record->update(['status' => VotingSubject::STATUS_ACTIVE]);
 
             return $record;
@@ -63,6 +58,7 @@ class NominationService
             $ranked = $record->contestants()->withCount('votes')
                 ->orderByDesc('votes_count')->orderBy('display_order')->orderBy('id')->get();
             abort_if($ranked->sum('votes_count') === 0, 409, 'A nomination with no votes cannot be closed.');
+            abort_if($ranked->count() < 2, 409, 'At least two unique nominees are required to create a voting draft.');
 
             $cutoff = $ranked[min($record->top_n, $ranked->count()) - 1]->votes_count;
             $generated = $event->votingSubjects()->create([
@@ -86,19 +82,6 @@ class NominationService
     private function lockedNomination(Event $event, VotingSubject $subject): VotingSubject
     {
         return $event->nominationSubjects()->whereKey($subject->id)->lockForUpdate()->firstOrFail();
-    }
-
-    private function replaceNominees(VotingSubject $subject, array $attendeeIds): void
-    {
-        $attendees = Attendee::whereIn('id', $attendeeIds)->get()->keyBy('id');
-        foreach ($attendeeIds as $order => $attendeeId) {
-            $attendee = $attendees->get($attendeeId);
-            $subject->contestants()->create([
-                'attendee_id' => $attendee->id,
-                'name' => Str::squish($attendee->first_name.' '.$attendee->last_name),
-                'display_order' => $order,
-            ]);
-        }
     }
 
     private function newSlug(): string

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\VotingClosed;
 use App\Http\Requests\StoreVotingSubjectRequest;
 use App\Http\Requests\UpdateVotingSubjectRequest;
 use App\Http\Resources\VotingSubjectResource;
@@ -120,6 +121,7 @@ class VotingSubjectController extends Controller
             }
 
             $record->update(['status' => VotingSubject::STATUS_CLOSED]);
+            event(new VotingClosed($record));
 
             return response()->json(['data' => $this->subjectData($record)]);
         });
