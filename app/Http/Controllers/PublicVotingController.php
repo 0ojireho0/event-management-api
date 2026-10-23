@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\NominationStatisticsUpdated;
 use App\Http\Requests\SubmitVoteRequest;
 use App\Models\VotingSubject;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -57,6 +58,10 @@ class PublicVotingController extends Controller
                     'voting_contestant_id' => $contestant->id,
                     'registration_id' => $registration->id,
                 ]);
+
+                if ($lockedSubject->mode === 'nomination') {
+                    event(new NominationStatisticsUpdated($lockedSubject));
+                }
 
                 return response()->json(['message' => 'Your vote has been recorded.'], 201);
             });

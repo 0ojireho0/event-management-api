@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\StoreVotingSubjectRequest;
 use App\Http\Requests\UpdateVotingSubjectRequest;
+use App\Http\Resources\VotingSubjectResource;
 use App\Models\Event;
 use App\Models\VotingSubject;
 use Illuminate\Http\JsonResponse;
@@ -35,6 +36,7 @@ class VotingSubjectController extends Controller
                 'slug' => $slug,
                 'title' => $data['title'],
                 'status' => VotingSubject::STATUS_DRAFT,
+                'mode' => 'manual',
             ]);
             $this->replaceContestants($subject, $data['contestants']);
 
@@ -57,6 +59,7 @@ class VotingSubjectController extends Controller
 
         return DB::transaction(function () use ($event, $subject, $data): JsonResponse {
             $record = $this->findSubject($event, $subject, true);
+            abort_unless($record->mode === 'manual', 404);
             if ($record->status !== VotingSubject::STATUS_DRAFT) {
                 return $this->conflict('Only draft voting subjects can be edited.');
             }
@@ -91,6 +94,7 @@ class VotingSubjectController extends Controller
 
         return DB::transaction(function () use ($event, $subject): JsonResponse {
             $record = $this->findSubject($event, $subject, true);
+            abort_unless($record->mode === 'manual', 404);
             if ($record->status !== VotingSubject::STATUS_DRAFT) {
                 return $this->conflict('Only draft voting subjects can be activated.');
             }
@@ -110,6 +114,7 @@ class VotingSubjectController extends Controller
 
         return DB::transaction(function () use ($event, $subject): JsonResponse {
             $record = $this->findSubject($event, $subject, true);
+            abort_unless($record->mode === 'manual', 404);
             if ($record->status !== VotingSubject::STATUS_ACTIVE) {
                 return $this->conflict('Only active voting subjects can be closed.');
             }
@@ -143,21 +148,7 @@ class VotingSubjectController extends Controller
 
     private function subjectData(VotingSubject $subject): array
     {
-        $subject->loadCount(['contestants', 'votes']);
-        $contestants = $subject->contestants()->orderBy('display_order')->orderBy('id')
-            ->get(['id', 'voting_subject_id', 'name', 'display_order'])
-            ->map(fn ($contestant): array => $contestant->only(['id', 'name', 'display_order']));
-
-        return [
-            'id' => $subject->id,
-            'slug' => $subject->slug,
-            'title' => $subject->title,
-            'status' => $subject->status,
-            'contestant_count' => $subject->contestants_count,
-            'total_votes' => $subject->votes_count,
-            'contestants' => $contestants,
-            'public_url' => rtrim((string) config('app.frontend_url'), '/').'/vote/'.$subject->slug,
-        ];
+        return (new VotingSubjectResource($subject))->resolve();
     }
 
     private function conflict(string $message): JsonResponse
