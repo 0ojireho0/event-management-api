@@ -52,6 +52,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/events', [EventController::class, 'index']);
         Route::post('/events', [EventController::class, 'store']);
         Route::get('/events/{event:slug}/nomination-candidates', [NominationController::class, 'candidates']);
+        Route::post('/events/{event:slug}/nominations', [NominationController::class, 'store']);
+        Route::patch('/events/{event:slug}/nominations/{subject:slug}', [NominationController::class, 'update'])->withoutScopedBindings();
+        Route::post('/events/{event:slug}/nominations/{subject:slug}/open', [NominationController::class, 'open'])->withoutScopedBindings();
+        Route::post('/events/{event:slug}/nominations/{subject:slug}/close', [NominationController::class, 'close'])->withoutScopedBindings();
         Route::get('/events/{event:slug}/voting-subjects', [VotingSubjectController::class, 'index']);
         Route::post('/events/{event:slug}/voting-subjects', [VotingSubjectController::class, 'store']);
         Route::get('/events/{event:slug}/voting-subjects/{subject}', [VotingSubjectController::class, 'show']);
