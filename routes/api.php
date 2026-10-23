@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Http\Controllers\EventController;
+use App\Http\Controllers\NominationController;
 use App\Http\Controllers\PasswordController;
 use App\Http\Controllers\PublicRegistrationController;
 use App\Http\Controllers\PublicVotingController;
@@ -50,6 +51,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::apiResource('users', UserController::class)->except(['show']);
         Route::get('/events', [EventController::class, 'index']);
         Route::post('/events', [EventController::class, 'store']);
+        Route::get('/events/{event:slug}/nomination-candidates', [NominationController::class, 'candidates']);
         Route::get('/events/{event:slug}/voting-subjects', [VotingSubjectController::class, 'index']);
         Route::post('/events/{event:slug}/voting-subjects', [VotingSubjectController::class, 'store']);
         Route::get('/events/{event:slug}/voting-subjects/{subject}', [VotingSubjectController::class, 'show']);
