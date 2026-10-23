@@ -107,7 +107,14 @@ test('canonical nomination statistics contain exact ranks shares and confirmed p
     $event = new NominationStatisticsUpdated($subject);
     expect($event)->toBeInstanceOf(ShouldBroadcast::class)
         ->toBeInstanceOf(ShouldDispatchAfterCommit::class)->toBeInstanceOf(ShouldRescue::class)
-        ->and($event->broadcastWith())->toEqual($expected);
+        ->and($event->broadcastWith())->toEqual([
+            'event_id' => $subject->event_id,
+            'subject_id' => $subject->id,
+            'status' => 'active',
+            'total_votes' => 5,
+            'total_registrations' => 6,
+            'contestant_votes' => [2, 1, 2, 0],
+        ]);
     $this->actingAs(User::find($subject->event->created_by))
         ->getJson("/api/events/{$subject->event->slug}/voting-subjects/{$subject->slug}/results")
         ->assertOk()->assertExactJson($expected);
@@ -131,6 +138,30 @@ test('a successful nomination vote queues its private aggregate update only afte
     $this->getJson("/api/voting/{$subject->slug}")->assertOk()->assertExactJson([
         'title' => 'Best Teammate', 'contestants' => [['id' => $contestant->id, 'name' => 'Nominee']],
     ]);
+});
+
+test('the largest nomination broadcast remains below Reverb default and excludes nominee names', function () {
+    $subject = broadcastSubject();
+    $longName = str_repeat('N', 511);
+    $subject->contestants()->createMany(array_map(
+        fn ($order) => ['name' => $longName, 'display_order' => $order],
+        range(0, 249),
+    ));
+
+    $payload = (new NominationStatisticsUpdated($subject))->broadcastWith();
+    $json = json_encode($payload, JSON_THROW_ON_ERROR);
+    $largestCounts = $payload;
+    $largestCounts['contestant_votes'] = array_fill(0, 250, 36_000_000_000_000_000);
+    $largestCounts['total_votes'] = 9_000_000_000_000_000_000;
+    $largestCounts['total_registrations'] = PHP_INT_MAX;
+    $largestCountsJson = json_encode($largestCounts, JSON_THROW_ON_ERROR);
+
+    expect($payload['contestant_votes'])->toHaveCount(250)
+        ->and($payload['contestant_votes'])->toBe(array_fill(0, 250, 0))
+        ->and(array_keys($payload))->toBe(['event_id', 'subject_id', 'status', 'total_votes', 'total_registrations', 'contestant_votes'])
+        ->and(strlen($json))->toBeLessThan(10_000)
+        ->and(strlen($largestCountsJson))->toBeLessThan(10_000)
+        ->and($json)->not->toContain($longName);
 });
 
 test('rolling back a saved nomination vote also discards its broadcast', function () {

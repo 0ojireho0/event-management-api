@@ -2,6 +2,8 @@
 
 Nomination leaderboards receive private statistics snapshots through Laravel Reverb. A successful nomination dispatches `NominationStatisticsUpdated` after the database transaction commits. The event implements `ShouldBroadcast`, so delivery needs both a working Reverb connection and a running queue worker. The application uses the configured queue connection and its default queue; it does not define a separate broadcast queue.
 
+The WebSocket message is a compact aggregate (`event_id`, `subject_id`, status, totals, and a vote-count vector), not the REST response: it omits contestant names and roster fields to remain within Reverb's default 10,000-byte message size at the supported 250-nominee limit. The admin client combines it with the authorized REST roster; malformed or mismatched vectors cause a REST revalidation. The REST response shape remains unchanged.
+
 ## Provision and attach the WebSocket application
 
 In Laravel Cloud, create a Reverb WebSocket cluster from the organization's Resources > WebSockets page. Select the appropriate region and connection capacity. On the API environment's canvas, use Add resource > WebSockets to attach a WebSocket application from that cluster, then redeploy. Use a separate WebSocket application for each environment to keep its credentials and channels separate. See [Laravel Cloud WebSockets](https://laravel.com/cloud/docs/resources/websockets).

@@ -25,6 +25,8 @@ Attendee search is an authenticated, event-scoped API operation. It joins regist
 
 The existing admin results endpoint remains the source for the initial statistics snapshot and for resynchronizing after a WebSocket reconnect. Use Laravel Broadcasting with an event-scoped private channel authorized only for the event-owning admin. After a valid nomination vote is committed, broadcast the updated aggregate statistics (total votes and each nominee's count, rank, and share). Broadcast after the database transaction commits so clients never receive counts for an uncommitted vote. Keep the public voting response free of result counts. The frontend subscribes only while an admin is viewing an open nomination round, unsubscribes when it closes or the page is left, and reloads the snapshot after reconnecting. Configure a running queue worker for queued broadcasts; broadcast delivery failure must not undo or fail an already-saved vote.
 
+The Reverb transport event is intentionally smaller than the REST results response: it contains `event_id`, `subject_id`, active `status`, aggregate vote and confirmed-registration totals, and a positional `contestant_votes` array ordered by `display_order` then contestant ID. It does not contain names or other roster fields. The admin client merges this vector with the stable roster from the REST response and derives the canonical ordering, ranks, and percentages locally. If the roster is missing or does not align with the vector/totals, the client revalidates through REST. This transport-only distinction keeps the 250-nominee update below Reverb's default 10,000-byte message limit without changing the owner-only REST results contract.
+
 ## User flows
 
 ### Create and run nominations

@@ -40,6 +40,6 @@ class NominationStatisticsUpdated implements ShouldBroadcast, ShouldDispatchAfte
 
     public function broadcastWith(): array
     {
-        return app(VotingStatistics::class)->forSubject(VotingSubject::findOrFail($this->subjectId));
+        return app(VotingStatistics::class)->forNominationBroadcast(VotingSubject::findOrFail($this->subjectId));
     }
 }
