@@ -1,11 +1,13 @@
 <?php
 
+use App\Events\NominationClosed;
 use App\Events\NominationStatisticsUpdated;
 use App\Models\Attendee;
 use App\Models\Event;
 use App\Models\Registration;
 use App\Models\User;
 use App\Models\VotingSubject;
+use App\Services\NominationService;
 use App\Services\VotingStatistics;
 use Illuminate\Broadcasting\BroadcastEvent;
 use Illuminate\Contracts\Broadcasting\Factory;
@@ -56,6 +58,15 @@ function queuedNominationBroadcast(): BroadcastEvent
     $payload = json_decode(DB::table('jobs')->sole()->payload, true);
 
     return unserialize($payload['data']['command']);
+}
+
+function queuedBroadcastEvents(): array
+{
+    return DB::table('jobs')->orderBy('id')->get()->map(function ($job) {
+        $payload = json_decode($job->payload, true);
+
+        return unserialize($payload['data']['command'])->event;
+    })->all();
 }
 
 function useReverbChannelAuthentication(): void
@@ -138,6 +149,55 @@ test('a successful nomination vote queues its private aggregate update only afte
     $this->getJson("/api/voting/{$subject->slug}")->assertOk()->assertExactJson([
         'title' => 'Best Teammate', 'contestants' => [['id' => $contestant->id, 'name' => 'Nominee']],
     ]);
+});
+
+test('closing a nomination queues one private close notice only after the close transaction commits', function () {
+    $subject = broadcastSubject();
+    $first = $subject->contestants()->create(['name' => 'First', 'display_order' => 0]);
+    $subject->contestants()->create(['name' => 'Second', 'display_order' => 1]);
+    $subject->votes()->create([
+        'registration_id' => broadcastRegistration($subject)->id,
+        'voting_contestant_id' => $first->id,
+    ]);
+
+    DB::beginTransaction();
+    app(NominationService::class)->close($subject->event, $subject);
+    expect($subject->fresh()->status)->toBe(VotingSubject::STATUS_CLOSED)
+        ->and(DB::table('jobs')->count())->toBe(0);
+    DB::commit();
+
+    $this->assertDatabaseCount('jobs', 1);
+    $event = queuedBroadcastEvents()[0];
+    expect($event)->toBeInstanceOf(NominationClosed::class)
+        ->and($event)->toBeInstanceOf(ShouldBroadcast::class)
+        ->toBeInstanceOf(ShouldDispatchAfterCommit::class)
+        ->toBeInstanceOf(ShouldRescue::class)
+        ->and($event->broadcastWhen())->toBeTrue()
+        ->and((string) $event->broadcastOn()[0])->toBe("private-events.{$subject->event_id}.nominations.{$subject->id}")
+        ->and($event->broadcastWith())->toBe([
+            'event_id' => $subject->event_id,
+            'subject_id' => $subject->id,
+            'status' => VotingSubject::STATUS_CLOSED,
+        ]);
+});
+
+test('rolling back a successful nomination close removes its queued close notice', function () {
+    $subject = broadcastSubject();
+    $first = $subject->contestants()->create(['name' => 'First', 'display_order' => 0]);
+    $subject->contestants()->create(['name' => 'Second', 'display_order' => 1]);
+    $subject->votes()->create([
+        'registration_id' => broadcastRegistration($subject)->id,
+        'voting_contestant_id' => $first->id,
+    ]);
+
+    DB::beginTransaction();
+    app(NominationService::class)->close($subject->event, $subject);
+    $this->assertDatabaseCount('jobs', 0);
+    DB::rollBack();
+
+    expect($subject->fresh()->status)->toBe(VotingSubject::STATUS_ACTIVE)
+        ->and(DB::table('jobs')->count())->toBe(0)
+        ->and($subject->event->votingSubjects()->where('generated_from_subject_id', $subject->id)->exists())->toBeFalse();
 });
 
 test('the largest nomination broadcast remains below Reverb default and excludes nominee names', function () {

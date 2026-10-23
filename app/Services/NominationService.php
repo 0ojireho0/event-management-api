@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Events\NominationClosed;
 use App\Models\Attendee;
 use App\Models\Event;
 use App\Models\VotingSubject;
@@ -76,6 +77,7 @@ class NominationService
             }
 
             $record->update(['status' => VotingSubject::STATUS_CLOSED]);
+            event(new NominationClosed($record));
 
             return $record;
         });

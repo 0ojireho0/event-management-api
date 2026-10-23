@@ -1,6 +1,6 @@
 # Nomination broadcasting deployment
 
-Nomination leaderboards receive private statistics snapshots through Laravel Reverb. A successful nomination dispatches `NominationStatisticsUpdated` after the database transaction commits. The event implements `ShouldBroadcast`, so delivery needs both a working Reverb connection and a running queue worker. The application uses the configured queue connection and its default queue; it does not define a separate broadcast queue.
+Nomination leaderboards receive private statistics updates through Laravel Reverb. A successful nomination vote dispatches `NominationStatisticsUpdated` after the database transaction commits. A successful close separately dispatches the compact `NominationClosed` notice after commit. Both broadcasts are rescued so a delivery/queue failure cannot roll back a saved vote or close. Delivery needs both a working Reverb connection and a running queue worker. The application uses the configured queue connection and its default queue; it does not define a separate broadcast queue.
 
 The WebSocket message is a compact aggregate (`event_id`, `subject_id`, status, totals, and a vote-count vector), not the REST response: it omits contestant names and roster fields to remain within Reverb's default 10,000-byte message size at the supported 250-nominee limit. The admin client combines it with the authorized REST roster; malformed or mismatched vectors cause a REST revalidation. The REST response shape remains unchanged.
 
@@ -60,7 +60,7 @@ The event's after-commit interface defers dispatch even though `config/queue.php
 
 1. Open an active nomination leaderboard as its owning admin. Confirm a secure WebSocket connection and successful private-channel authorization through `/api/broadcasting/auth`.
 2. Submit a valid nomination in a separate attendee session. Confirm the saved vote and an updated leaderboard snapshot without reloading.
-3. Confirm another admin and an attendee cannot authorize the owner's private statistics channel.
-4. Disconnect and reconnect the owner's browser; confirm the leaderboard refreshes from the results endpoint on recovery. Close nominations and confirm further votes are rejected.
+3. Confirm another admin and an attendee cannot authorize the owner's private statistics channel. After closing, confirm a new channel authorization is rejected while the owner's already-connected leaderboard receives the close notice, refreshes from the results endpoint, and leaves the channel.
+4. Disconnect and reconnect the owner's browser; confirm the leaderboard refreshes from the results endpoint on recovery. Confirm further votes are rejected after the close.
 
 These checks require a deployed API, built frontend, attached cluster, and active worker; unit tests and a successful build do not establish production connectivity.
